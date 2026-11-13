@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+test "$(go env GOOS)" = darwin
+package=build/install/scryer-ts-js-engine
+mkdir -p "$package/bin"
+CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -o "$package/bin/libscryer-ts-js-engine.dylib" ./cmd/ts-js-engine-abi
+rm -f "$package/bin/libscryer-ts-js-engine.h"
+cat > "$package/engine.json" <<MANIFEST
+{
+  "schemaVersion": 1,
+  "engine": {
+    "protocolVersion": 1,
+    "id": "ts-js",
+    "name": "Scryer TS/JS Engine",
+    "version": "0.0.0-dev",
+    "source": "github.com/scryer-labs/scryer-ts-js-engine",
+    "mock": false
+  },
+  "capabilities": {
+    "languages": ["TypeScript", "TSX", "JavaScript", "JSX", "Svelte"],
+    "operations": ["scan"],
+    "scanFacts": ["dependencies", "architecture", "files", "ipc"]
+  },
+  "library": "bin/libscryer-ts-js-engine.dylib",
+  "os": "darwin",
+  "arch": "$(go env GOARCH)"
+}
+MANIFEST
+cp LICENSE "$package/"
