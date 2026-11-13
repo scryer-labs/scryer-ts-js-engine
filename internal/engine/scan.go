@@ -12,6 +12,7 @@ import (
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"github.com/scryer-labs/scryer-ts-js-engine/internal/framework/react"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/framework/svelte"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/framework/tauri"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/script"
@@ -42,6 +43,7 @@ var languages = map[string]string{
 func scanProject(ctx context.Context, root string, selected []string) (map[string]any, error) {
 	fsys := os.DirFS(root)
 	packages := map[string]string{}
+	packageManifests := map[string]manifest{}
 	manifests := []manifest{}
 	files := []fileFact{}
 	paths := map[string]bool{}
@@ -62,6 +64,7 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 		if !entry.Type().IsRegular() {
 			return nil
 		}
+		paths[file] = true
 		if entry.Name() == "package.json" {
 			raw, err := fs.ReadFile(fsys, file)
 			if err != nil {
@@ -74,8 +77,8 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 			pkg.File = file
 			manifests = append(manifests, pkg)
 			packages[path.Dir(file)] = file
+			packageManifests[file] = pkg
 		} else if language := languages[path.Ext(file)]; language != "" {
-			paths[file] = true
 			files = append(files, fileFact{Path: file, Language: language, ComponentIDs: []string{}})
 		}
 		return nil
@@ -87,7 +90,10 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 	if slices.Contains(selected, "dependencies") {
 		facts["dependencies"] = map[string]any{"basis": "package-json-declarations", "manifests": manifests}
 	}
-	if slices.Contains(selected, "architecture") {
+	wantArchitecture := slices.Contains(selected, "architecture")
+	var reactFacts *react.Collector
+	reactPackages := map[string]bool{}
+	if wantArchitecture {
 		type component struct {
 			ID   string `json:"componentId"`
 			Name string `json:"name"`
@@ -96,6 +102,9 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 		}
 		components := make([]component, 0, len(manifests))
 		for _, pkg := range manifests {
+			if pkg.declares("react") {
+				reactPackages[pkg.File] = true
+			}
 			name := pkg.Name
 			if name == "" {
 				name = path.Dir(pkg.File)
@@ -103,9 +112,16 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 			components = append(components, component{pkg.File, name, "package", pkg.File})
 		}
 		facts["architecture"] = map[string]any{"projectId": root, "basis": "package-json-declarations", "components": components}
+		if len(reactPackages) > 0 {
+			reactFacts = react.New()
+		}
 	}
 	wantFiles, wantIPC := slices.Contains(selected, "files"), slices.Contains(selected, "ipc")
-	if !wantFiles && !wantIPC {
+	var graph *script.Graph
+	if slices.Contains(selected, "call-graph") {
+		graph = script.NewGraph(root)
+	}
+	if !wantFiles && !wantIPC && reactFacts == nil && graph == nil {
 		return facts, nil
 	}
 	var framework *tauri.Collector
@@ -118,7 +134,11 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if owner := owningPackage(file.Path, packages); owner != "" {
+		if !wantFiles && !wantIPC && graph == nil && file.Language != "TSX" && file.Language != "JSX" {
+			continue
+		}
+		owner := owningPackage(file.Path, packages)
+		if owner != "" {
 			file.ComponentIDs = append(file.ComponentIDs, owner)
 		}
 		data, err := fs.ReadFile(fsys, file.Path)
@@ -140,6 +160,16 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 						imports = append(imports, edge)
 					}
 				}
+				if reactFacts != nil && reactPackages[owner] {
+					if err := reactFacts.Observe(ctx, part, root, owner); err != nil {
+						return err
+					}
+				}
+				if graph != nil {
+					if err := graph.Observe(ctx, part, root); err != nil {
+						return err
+					}
+				}
 				if framework != nil {
 					return framework.Observe(ctx, part, root)
 				}
@@ -153,6 +183,29 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 	}
 	if wantFiles {
 		facts["files"] = map[string]any{"projectId": root, "files": files, "imports": imports}
+	}
+	resolve := func(file, specifier string) string {
+		edge := script.Import{Specifier: specifier}
+		edge.File = file
+		resolveImport(&edge, paths)
+		return edge.TargetFile
+	}
+	if graph != nil {
+		if err := graph.Resolve(ctx, resolve); err != nil {
+			return nil, err
+		}
+		facts["call-graph"] = graph
+	}
+	if reactFacts != nil {
+		facts["architecture"].(map[string]any)["react"] = reactFacts.Facts(resolve, func(file, specifier string) bool {
+			pkg := packageManifests[owningPackage(file, packages)]
+			name, rest, _ := strings.Cut(specifier, "/")
+			if strings.HasPrefix(name, "@") {
+				subpath, _, _ := strings.Cut(rest, "/")
+				name += "/" + subpath
+			}
+			return name != pkg.Name && pkg.declares(name)
+		})
 	}
 	if framework != nil {
 		facts["ipc"] = framework.Facts()
@@ -192,4 +245,9 @@ func resolveImport(edge *script.Import, paths map[string]bool) {
 	if len(candidates) > 1 {
 		edge.Resolution = "ambiguous"
 	}
+}
+
+func (m manifest) declares(name string) bool {
+	return m.Dependencies[name] != "" || m.DevDependencies[name] != "" ||
+		m.PeerDependencies[name] != "" || m.OptionalDependencies[name] != ""
 }

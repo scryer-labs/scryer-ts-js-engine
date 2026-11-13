@@ -68,7 +68,7 @@ func (r Request) scan(ctx context.Context) (*report, *protocolError) {
 		selected = []string{"dependencies"}
 	}
 	for _, fact := range selected {
-		if fact != "dependencies" && fact != "architecture" && fact != "files" && fact != "ipc" {
+		if fact != "dependencies" && fact != "architecture" && fact != "files" && fact != "ipc" && fact != "call-graph" {
 			return nil, &protocolError{"UNSUPPORTED_FACT", "TS/JS engine does not support " + fact}
 		}
 	}

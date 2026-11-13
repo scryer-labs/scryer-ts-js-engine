@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/scryer-labs/scryer-ts-js-engine/internal/framework/react"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/framework/tauri"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/script"
 )
@@ -61,4 +62,65 @@ dispatch(dynamic);
 			t.Fatalf("unexpected endpoint: %+v", endpoint)
 		}
 	}
+}
+
+func TestReactArchitectureResolvesDirectAndLocalComponents(t *testing.T) {
+	root := t.TempDir()
+	for file, contents := range map[string]string{
+		"package.json": `{"name":"sample","dependencies":{"react":"19","react-markdown":"10"}}`,
+		"Child.tsx":    `export const Child = () => <div/>;`,
+		"style.css":    "",
+		"App.tsx": `import { Child as Renamed } from "./Child";
+import Markdown from "react-markdown";
+import "./style.css";
+const Local = () => <span/>;
+function App() { const Dynamic = views[current]; return <>{items.map(item => <Renamed/>) }<Local/><External/><Markdown/><Dynamic/></>; }
+export default App;`,
+		"other/package.json": `{"name":"other"}`,
+		"other/Widget.tsx":   `export const Widget = () => <div/>;`,
+	} {
+		target := filepath.Join(root, file)
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := scanProject(context.Background(), root, []string{"architecture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report) != 1 {
+		t.Fatalf("unexpected extra facts: %+v", report)
+	}
+	facts := report["architecture"].(map[string]any)["react"].(react.Facts)
+	names := map[string]string{}
+	for _, component := range facts.Components {
+		names[component.ID] = component.Name
+	}
+	if len(names) != 3 || len(facts.Links) != 5 {
+		t.Fatalf("unexpected React facts: %+v", facts)
+	}
+	for i, want := range []string{"Child", "Local", ""} {
+		link := facts.Links[i]
+		if names[link.From] != "App" || names[link.To] != want || link.Line != 5 {
+			t.Fatalf("unexpected render link: %+v", link)
+		}
+	}
+	if external := facts.Links[3]; external.Resolution != "external" || external.ImportSpecifier != "react-markdown" || external.To != "" {
+		t.Fatalf("unexpected external link: %+v", external)
+	}
+	if dynamic := facts.Links[4]; dynamic.Resolution != "dynamic" || dynamic.To != "" {
+		t.Fatalf("unexpected dynamic link: %+v", dynamic)
+	}
+	filesReport, err := scanProject(context.Background(), root, []string{"files"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imports := filesReport["files"].(map[string]any)["imports"].([]script.Import)
+	if len(imports) != 3 || imports[2].TargetFile != "style.css" || imports[2].Resolution != "resolved" {
+		t.Fatalf("unexpected stylesheet import: %+v", imports)
+	}
+
 }
