@@ -3,6 +3,8 @@ package svelte
 import (
 	"context"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 	html "github.com/tree-sitter/tree-sitter-html/bindings/go"
@@ -10,11 +12,16 @@ import (
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/source"
 )
 
-func Scripts(ctx context.Context, file string, contents []byte) ([]source.Fragment, error) {
+type Tag struct {
+	source.Location
+	Name string `json:"tag"`
+}
+
+func Scan(ctx context.Context, file string, contents []byte) ([]source.Fragment, []Tag, error) {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(sitter.NewLanguage(html.Language())); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	tree := parser.ParseWithOptions(func(offset int, _ sitter.Point) []byte {
 		return contents[offset:]
@@ -23,11 +30,11 @@ func Scripts(ctx context.Context, file string, contents []byte) ([]source.Fragme
 		defer tree.Close()
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var scripts []source.Fragment
 	if tree == nil {
-		return scripts, nil
+		return scripts, nil, nil
 	}
 	root := tree.RootNode()
 	for i := uint(0); i < root.NamedChildCount(); i++ {
@@ -60,5 +67,33 @@ func Scripts(ctx context.Context, file string, contents []byte) ([]source.Fragme
 			}
 		}
 	}
-	return scripts, nil
+	var tags []Tag
+	part := source.Fragment{File: file, Bytes: contents}
+	var walk func(*sitter.Node) error
+	walk = func(node *sitter.Node) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		switch node.Kind() {
+		case "script_element", "style_element", "comment":
+			return nil
+		case "start_tag", "self_closing_tag":
+			tag := node.NamedChild(0)
+			if tag != nil && tag.Kind() == "tag_name" && !node.HasError() {
+				name := tag.Utf8Text(contents)
+				initial, _ := utf8.DecodeRuneInString(name)
+				if unicode.IsUpper(initial) && !strings.ContainsAny(name, ".:-") {
+					tags = append(tags, Tag{part.Location(tag), name})
+				}
+			}
+		}
+		for i := uint(0); i < node.NamedChildCount(); i++ {
+			if err := walk(node.NamedChild(i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	err := walk(root)
+	return scripts, tags, err
 }

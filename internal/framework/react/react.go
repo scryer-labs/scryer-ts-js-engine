@@ -37,10 +37,11 @@ type Facts struct {
 }
 
 type Collector struct {
-	facts   Facts
-	locals  map[string]map[string]string
-	exports map[string]map[string]string
-	pending []pendingLink
+	facts      Facts
+	locals     map[string]map[string]string
+	exports    map[string]map[string]string
+	pending    []pendingLink
+	byFunction map[string]string
 }
 
 type binding struct {
@@ -56,7 +57,7 @@ type pendingLink struct {
 func New() *Collector {
 	return &Collector{
 		facts:  Facts{Components: []Component{}, Links: []Link{}},
-		locals: map[string]map[string]string{}, exports: map[string]map[string]string{},
+		locals: map[string]map[string]string{}, exports: map[string]map[string]string{}, byFunction: map[string]string{},
 	}
 }
 
@@ -104,6 +105,8 @@ func (c *Collector) Observe(ctx context.Context, part source.Fragment, root *sit
 			id := fmt.Sprintf("%s:%d:%d:%s", loc.File, loc.Line, loc.Column, symbol)
 			c.facts.Components = append(c.facts.Components, Component{Location: loc, ID: id, Name: symbol, PackageID: packageID, Kind: "react-component"})
 			locals[symbol] = id
+			definition := part.Location(function)
+			c.byFunction[fmt.Sprintf("%s:%d:%d", definition.File, definition.Line, definition.Column)] = id
 			if isDefault {
 				exports["default"] = id
 			} else if exported {
@@ -149,7 +152,7 @@ func (c *Collector) Observe(ctx context.Context, part source.Fragment, root *sit
 	return nil
 }
 
-func (c *Collector) Facts(resolve func(file, specifier string) string, external func(file, specifier string) bool) Facts {
+func (c *Collector) Facts(resolve func(file, specifier string) string, exported func(file, name string) string, external func(file, specifier string) bool) Facts {
 	result := c.facts
 	for _, site := range c.pending {
 		link := site.link
@@ -159,6 +162,9 @@ func (c *Collector) Facts(resolve func(file, specifier string) string, external 
 			link.ImportSpecifier, link.ImportedName = site.imported.specifier, site.imported.exported
 			file := resolve(link.File, site.imported.specifier)
 			link.To = c.exports[file][site.imported.exported]
+			if link.To == "" {
+				link.To = c.byFunction[exported(file, site.imported.exported)]
+			}
 			if file == "" && external(link.File, site.imported.specifier) {
 				link.Resolution = "external"
 			}
@@ -283,6 +289,12 @@ func renderSites(ctx context.Context, part source.Fragment, body *sitter.Node) (
 			return nil
 		case "return_statement":
 			returned = true
+			// A direct, same-block const initializer is a stable source for JSX.
+			if value := node.NamedChild(0); value != nil && value.Kind() == "identifier" {
+				if initializer := returnedConst(node, value.Utf8Text(part.Bytes), part.Bytes); initializer != nil {
+					return visit(initializer, true)
+				}
+			}
 		case "jsx_opening_element", "jsx_self_closing_element":
 			if returned {
 				renders = true
@@ -304,6 +316,30 @@ func renderSites(ctx context.Context, part source.Fragment, body *sitter.Node) (
 	}
 	err := visit(body, body.Kind() != "statement_block")
 	return tags, renders, err
+}
+
+func returnedConst(returnNode *sitter.Node, name string, contents []byte) *sitter.Node {
+	block := returnNode.Parent()
+	if block == nil || block.Kind() != "statement_block" {
+		return nil
+	}
+	for i := uint(0); i < block.NamedChildCount(); i++ {
+		statement := block.NamedChild(i)
+		if statement.StartByte() >= returnNode.StartByte() {
+			break
+		}
+		if statement.Kind() != "lexical_declaration" || !hasToken(statement, "const") {
+			continue
+		}
+		for j := uint(0); j < statement.NamedChildCount(); j++ {
+			declaration := statement.NamedChild(j)
+			binding := declaration.ChildByFieldName("name")
+			if binding != nil && binding.Kind() == "identifier" && binding.Utf8Text(contents) == name {
+				return declaration.ChildByFieldName("value")
+			}
+		}
+	}
+	return nil
 }
 
 func mapCallback(node *sitter.Node, contents []byte) bool {

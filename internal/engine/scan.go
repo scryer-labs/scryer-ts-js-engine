@@ -86,6 +86,7 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 	if err != nil {
 		return nil, err
 	}
+	configs := readTSConfigs(fsys, paths)
 	facts := map[string]any{}
 	if slices.Contains(selected, "dependencies") {
 		facts["dependencies"] = map[string]any{"basis": "package-json-declarations", "manifests": manifests}
@@ -111,17 +112,20 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 			}
 			components = append(components, component{pkg.File, name, "package", pkg.File})
 		}
-		facts["architecture"] = map[string]any{"projectId": root, "basis": "package-json-declarations", "components": components}
+		facts["architecture"] = map[string]any{"projectId": root, "basis": "package-json-declarations", "components": components,
+			"limitations": []string{"react-wrappers-and-classes", "react-data-flow", "svelte-dynamic-components"}}
 		if len(reactPackages) > 0 {
 			reactFacts = react.New()
 		}
 	}
 	wantFiles, wantIPC := slices.Contains(selected, "files"), slices.Contains(selected, "ipc")
 	var graph *script.Graph
-	if slices.Contains(selected, "call-graph") {
+	wantCalls := slices.Contains(selected, "call-graph")
+	if wantCalls || reactFacts != nil {
 		graph = script.NewGraph(root)
 	}
-	if !wantFiles && !wantIPC && reactFacts == nil && graph == nil {
+	hasSvelte := wantArchitecture && slices.ContainsFunc(files, func(file fileFact) bool { return file.Language == "Svelte" })
+	if !wantFiles && !wantIPC && reactFacts == nil && graph == nil && !hasSvelte {
 		return facts, nil
 	}
 	var framework *tauri.Collector
@@ -129,12 +133,13 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 		framework = tauri.New(fsys)
 	}
 	imports := []script.Import{}
+	svelteFacts := svelte.NewFacts()
 	for i := range files {
 		file := &files[i]
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if !wantFiles && !wantIPC && graph == nil && file.Language != "TSX" && file.Language != "JSX" {
+		if !wantFiles && !wantIPC && graph == nil && file.Language != "TSX" && file.Language != "JSX" && file.Language != "Svelte" {
 			continue
 		}
 		owner := owningPackage(file.Path, packages)
@@ -146,17 +151,27 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 			return nil, err
 		}
 		fragments := []source.Fragment{{File: file.Path, Language: file.Language, Bytes: data}}
+		var tags []svelte.Tag
+		svelteImports := map[string][]string{}
 		if file.Language == "Svelte" {
-			fragments, err = svelte.Scripts(ctx, file.Path, data)
+			fragments, tags, err = svelte.Scan(ctx, file.Path, data)
 			if err != nil {
 				return nil, err
 			}
 		}
 		for _, fragment := range fragments {
 			hasErrors, err := script.Parse(ctx, fragment, func(ctx context.Context, part source.Fragment, root *sitter.Node) error {
+				if wantArchitecture && file.Language == "Svelte" {
+					for name, modules := range script.DefaultImports(part, root) {
+						svelteImports[name] = append(svelteImports[name], modules...)
+					}
+				}
 				if wantFiles {
 					for _, edge := range script.Imports(part, root) {
-						resolveImport(&edge, paths)
+						resolveImport(&edge, paths, configs)
+						if edge.Resolution == "unresolved" && packageManifests[owner].declares("@sveltejs/kit") {
+							svelte.AddKitImportCandidate(&edge, path.Dir(owner), paths)
+						}
 						imports = append(imports, edge)
 					}
 				}
@@ -166,7 +181,7 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 					}
 				}
 				if graph != nil {
-					if err := graph.Observe(ctx, part, root); err != nil {
+					if err := graph.Observe(ctx, part, root, wantCalls); err != nil {
 						return err
 					}
 				}
@@ -180,6 +195,17 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 			}
 			file.SyntaxErrors = file.SyntaxErrors || hasErrors
 		}
+		if wantArchitecture && file.Language == "Svelte" {
+			svelteFacts.Add(file.Path, owner, tags, svelteImports, func(specifier string) string {
+				edge := script.Import{Specifier: specifier}
+				edge.File = file.Path
+				resolveImport(&edge, paths, configs)
+				return edge.TargetFile
+			})
+		}
+	}
+	if len(svelteFacts.Components) > 0 {
+		facts["architecture"].(map[string]any)["svelte"] = svelteFacts
 	}
 	if wantFiles {
 		facts["files"] = map[string]any{"projectId": root, "files": files, "imports": imports}
@@ -187,17 +213,19 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 	resolve := func(file, specifier string) string {
 		edge := script.Import{Specifier: specifier}
 		edge.File = file
-		resolveImport(&edge, paths)
+		resolveImport(&edge, paths, configs)
 		return edge.TargetFile
 	}
-	if graph != nil {
+	if wantCalls {
 		if err := graph.Resolve(ctx, resolve); err != nil {
 			return nil, err
 		}
 		facts["call-graph"] = graph
 	}
 	if reactFacts != nil {
-		facts["architecture"].(map[string]any)["react"] = reactFacts.Facts(resolve, func(file, specifier string) bool {
+		facts["architecture"].(map[string]any)["react"] = reactFacts.Facts(resolve, func(file, name string) string {
+			return graph.ExportedFunction(file, name, resolve)
+		}, func(file, specifier string) bool {
 			pkg := packageManifests[owningPackage(file, packages)]
 			name, rest, _ := strings.Cut(specifier, "/")
 			if strings.HasPrefix(name, "@") {
@@ -208,7 +236,9 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 		})
 	}
 	if framework != nil {
-		facts["ipc"] = framework.Facts()
+		ipc := framework.Facts()
+		ipc["limitations"] = []string{"dynamic-channel-names", "tauri-wrapper-flow"}
+		facts["ipc"] = ipc
 	}
 	return facts, nil
 }
@@ -221,29 +251,35 @@ func owningPackage(file string, packages map[string]string) string {
 	}
 }
 
-func resolveImport(edge *script.Import, paths map[string]bool) {
+func resolveImport(edge *script.Import, paths map[string]bool, configs map[string]tsConfig) {
 	edge.Resolution = "unresolved"
-	if !strings.HasPrefix(edge.Specifier, "./") && !strings.HasPrefix(edge.Specifier, "../") {
-		return
+	bases := aliasBases(edge.File, edge.Specifier, configs)
+	if strings.HasPrefix(edge.Specifier, "./") || strings.HasPrefix(edge.Specifier, "../") {
+		bases = []string{path.Join(path.Dir(edge.File), edge.Specifier)}
 	}
-	base := path.Join(path.Dir(edge.File), edge.Specifier)
-	if paths[base] {
-		edge.TargetFile, edge.Resolution = base, "resolved"
-		return
-	}
-	candidates := []string{}
-	for _, ext := range []string{".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".svelte"} {
-		for _, file := range []string{base + ext, path.Join(base, "index"+ext)} {
-			if paths[file] {
-				candidates = append(candidates, file)
+	for _, base := range bases {
+		if paths[base] {
+			edge.TargetFile, edge.Resolution = base, "resolved"
+			return
+		}
+		candidates := []string{}
+		for _, ext := range []string{".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".svelte"} {
+			for _, file := range []string{base + ext, path.Join(base, "index"+ext)} {
+				if paths[file] {
+					candidates = append(candidates, file)
+				}
 			}
 		}
-	}
-	if len(candidates) == 1 {
-		edge.TargetFile, edge.Resolution = candidates[0], "resolved"
-	}
-	if len(candidates) > 1 {
-		edge.Resolution = "ambiguous"
+		switch len(candidates) {
+		case 1:
+			edge.TargetFile, edge.Resolution = candidates[0], "resolved"
+			return
+		case 0:
+			continue
+		default:
+			edge.Resolution = "ambiguous"
+			return
+		}
 	}
 }
 

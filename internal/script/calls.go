@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
@@ -29,21 +30,51 @@ type Symbol struct {
 }
 
 type Call struct {
-	ID         string `json:"callSiteId"`
-	Caller     string `json:"callerSymbolId,omitempty"`
-	Callee     string `json:"callee"`
-	Target     string `json:"targetSymbolId,omitempty"`
-	Resolution string `json:"resolution"`
-	Site       Range  `json:"site"`
-	binding    *binding
+	ID           string        `json:"callSiteId"`
+	Caller       string        `json:"callerSymbolId,omitempty"`
+	Callee       string        `json:"callee"`
+	Target       string        `json:"targetSymbolId,omitempty"`
+	Resolution   string        `json:"resolution"`
+	Reason       string        `json:"resolutionReason,omitempty"`
+	TestEvidence *TestEvidence `json:"testEvidence,omitempty"`
+	Site         Range         `json:"site"`
+	binding      *binding
+}
+
+// TestEvidence marks the registration call, without classifying its enclosing file.
+type TestEvidence struct {
+	Module string `json:"module"`
+	Export string `json:"export"`
+	Kind   string `json:"kind"`
+}
+
+func testEvidence(candidate *binding) *TestEvidence {
+	switch candidate.module {
+	case "vitest", "@jest/globals", "node:test", "@playwright/test":
+	default:
+		return nil
+	}
+	switch candidate.exported {
+	case "test", "it":
+		return &TestEvidence{candidate.module, candidate.exported, "test-registration"}
+	case "describe", "suite":
+		return &TestEvidence{candidate.module, candidate.exported, "test-suite"}
+	case "bench":
+		if candidate.module == "vitest" {
+			return &TestEvidence{candidate.module, candidate.exported, "benchmark-registration"}
+		}
+	}
+	return nil
 }
 
 type Graph struct {
-	ProjectID string   `json:"projectId"`
-	Basis     string   `json:"basis"`
-	Symbols   []Symbol `json:"symbols"`
-	Calls     []Call   `json:"calls"`
-	exports   map[string]map[string][]*binding
+	ProjectID   string   `json:"projectId"`
+	Basis       string   `json:"basis"`
+	Symbols     []Symbol `json:"symbols"`
+	Limitations []string `json:"limitations"`
+	Calls       []Call   `json:"calls"`
+	exports     map[string]map[string][]*binding
+	stars       map[string][]string
 }
 
 type binding struct {
@@ -51,7 +82,7 @@ type binding struct {
 }
 
 func NewGraph(root string) *Graph {
-	return &Graph{ProjectID: root, Basis: "tree-sitter-syntax", Symbols: []Symbol{}, Calls: []Call{}, exports: map[string]map[string][]*binding{}}
+	return &Graph{ProjectID: root, Basis: "tree-sitter-syntax", Symbols: []Symbol{}, Calls: []Call{}, exports: map[string]map[string][]*binding{}, stars: map[string][]string{}, Limitations: []string{"dynamic-dispatch", "external-package-symbols", "mutable-bindings", "svelte-template-expressions"}}
 }
 
 func span(part source.Fragment, node *sitter.Node) Range {
@@ -77,7 +108,8 @@ func symbolID(part source.Fragment, node *sitter.Node) string {
 	return fmt.Sprintf("%s:%d:%d", part.File, loc.Line, loc.Column)
 }
 
-func (g *Graph) Observe(ctx context.Context, part source.Fragment, root *sitter.Node) error {
+func (g *Graph) Observe(ctx context.Context, part source.Fragment, root *sitter.Node, collectCalls bool) error {
+	writes := writtenNames(part, root)
 	var walk func(*sitter.Node, string, []map[string][]*binding) error
 	walk = func(node *sitter.Node, caller string, scopes []map[string][]*binding) error {
 		if err := ctx.Err(); err != nil {
@@ -85,16 +117,18 @@ func (g *Graph) Observe(ctx context.Context, part source.Fragment, root *sitter.
 		}
 		switch node.Kind() {
 		case "program", "statement_block", "switch_body":
-			scope := localBindings(part, node)
+			scope := localBindings(part, node, writes)
 			scopes = append(scopes, scope)
-			if node.Kind() == "program" && part.Language != "Svelte" {
+			if node.Kind() == "program" && !strings.HasSuffix(part.File, ".svelte") {
 				// Svelte fragments share a file path but each has its own bindings.
 				exports := g.exports[part.File]
 				if exports == nil {
 					exports = map[string][]*binding{}
 					g.exports[part.File] = exports
 				}
-				addExports(part, node, scope, exports)
+				stars := g.stars[part.File]
+				addExports(part, node, scope, exports, &stars)
+				g.stars[part.File] = stars
 			}
 		case "for_statement", "for_in_statement":
 			scope := map[string][]*binding{}
@@ -123,9 +157,14 @@ func (g *Graph) Observe(ctx context.Context, part source.Fragment, root *sitter.
 				location := span(part, node)
 				site := Call{ID: fmt.Sprintf("%s-%d:%d", symbolID(part, node), location.End.Line, location.End.Column),
 					Caller: caller, Callee: callee.Utf8Text(part.Bytes), Resolution: "unresolved", Site: location}
-				if !node.HasError() && callee.Kind() == "identifier" {
+				site.Reason = "indirect-call"
+				if node.HasError() {
+					site.Reason = "syntax-error"
+				} else if callee.Kind() == "identifier" {
+					site.Reason = "binding-not-found"
 					for _, scope := range slices.Backward(scopes) {
 						if candidates, exists := scope[site.Callee]; exists {
+							site.Reason = "binding-not-statically-resolved"
 							if len(candidates) == 1 {
 								site.binding = candidates[0]
 							}
@@ -169,6 +208,15 @@ func (g *Graph) Observe(ctx context.Context, part source.Fragment, root *sitter.
 		}
 		return nil
 	}
+	if !collectCalls {
+		if !strings.HasSuffix(part.File, ".svelte") {
+			exports := map[string][]*binding{}
+			var stars []string
+			addExports(part, root, localBindings(part, root, writes), exports, &stars)
+			g.exports[part.File], g.stars[part.File] = exports, stars
+		}
+		return ctx.Err()
+	}
 	return walk(root, "", nil)
 }
 
@@ -184,15 +232,53 @@ func (g *Graph) Resolve(ctx context.Context, resolve func(file, specifier string
 		}
 		if target.module != "" {
 			file := resolve(call.Site.File, target.module)
-			exports := g.exports[file][target.exported]
-			if len(exports) != 1 || exports[0] == nil {
+			call.Reason = "import-target-not-found"
+			if file == "" {
+				call.TestEvidence = testEvidence(target)
 				continue
 			}
-			target = exports[0]
+			call.Reason = "export-not-statically-resolved"
+			symbol := g.ExportedFunction(file, target.exported, resolve)
+			if symbol == "" {
+				continue
+			}
+			target = &binding{symbol: symbol}
 		}
 		if target.symbol != "" {
-			call.Target, call.Resolution = target.symbol, "resolved"
+			call.Target, call.Resolution, call.Reason = target.symbol, "resolved", ""
 		}
 	}
 	return nil
+}
+
+// ExportedFunction returns a source symbol ID when the export chain is unique.
+func (g *Graph) ExportedFunction(file, name string, resolve func(string, string) string) string {
+	return g.exportedSymbol(file, name, resolve, map[exportLookup]bool{})
+}
+
+type exportLookup struct{ file, name string }
+
+func (g *Graph) exportedSymbol(file, name string, resolve func(string, string) string, seen map[exportLookup]bool) string {
+	key := exportLookup{file, name}
+	if file == "" || seen[key] {
+		return ""
+	}
+	seen[key] = true
+	defer delete(seen, key)
+	if candidates, explicit := g.exports[file][name]; explicit {
+		if len(candidates) != 1 || candidates[0] == nil {
+			return ""
+		}
+		candidate := candidates[0]
+		if candidate.module == "" {
+			return candidate.symbol
+		}
+		return g.exportedSymbol(resolve(file, candidate.module), candidate.exported, resolve, seen)
+	}
+	// One star can safely forward the name. Multiple stars can hide conflicting
+	// exports even when only one of their targets is a recognized function.
+	if stars := g.stars[file]; name != "default" && len(stars) == 1 {
+		return g.exportedSymbol(resolve(file, stars[0]), name, resolve, seen)
+	}
+	return ""
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/framework/react"
+	"github.com/scryer-labs/scryer-ts-js-engine/internal/framework/svelte"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/framework/tauri"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/script"
 )
@@ -123,4 +124,72 @@ export default App;`,
 		t.Fatalf("unexpected stylesheet import: %+v", imports)
 	}
 
+}
+
+func TestScanKeepsUnprovenCallsAndResolvesSourceEvidence(t *testing.T) {
+	root := t.TempDir()
+	for file, contents := range map[string]string{
+		"package.json":       `{"name":"sample","dependencies":{"react":"19","svelte":"5","@sveltejs/kit":"2"}}`,
+		"tsconfig.json":      "{ // local aliases\n \"extends\": \"./tsconfig.base\", }",
+		"tsconfig.base.json": `{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["src/*"],}}}`,
+		"src/index.ts":       `export * from "./public";`,
+		"src/public.ts":      `export { target as entry } from "./work";`,
+		"src/work.ts":        `export function target() {}`,
+		"src/main.ts": `import { entry } from "@lib/index";
+import { test as verify } from "vitest";
+function stale() {}
+function replacement() {}
+stale = replacement;
+entry();
+stale();
+verify("real registration", () => {});
+function shadow(verify: () => void) { verify(); }
+`,
+		"src/App.tsx":       `import { Child } from "@lib/components"; export function App() { const content = <Child/>; return content; }`,
+		"src/components.ts": `export { default as Child } from "./Child";`,
+		"src/Child.tsx":     `export default function Child() { return <div/>; }`,
+		"src/Page.svelte": `<script lang="ts">import Widget from "@lib/Widget.svelte"; import { count } from "$lib/state";</script>
+<Widget /><Missing />`,
+		"src/Widget.svelte": `<div />`,
+		"src/lib/state.ts":  `export const count = 0;`,
+	} {
+		target := filepath.Join(root, file)
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(contents), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	facts, err := scanProject(context.Background(), root, []string{"architecture", "call-graph", "files"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := facts["call-graph"].(*script.Graph)
+	names := map[string]string{}
+	for _, symbol := range graph.Symbols {
+		names[symbol.ID] = symbol.Name
+	}
+	if len(graph.Calls) != 4 ||
+		names[graph.Calls[0].Target] != "target" ||
+		graph.Calls[1].Target != "" || graph.Calls[1].Reason != "binding-not-statically-resolved" ||
+		graph.Calls[2].TestEvidence == nil || graph.Calls[3].TestEvidence != nil {
+		t.Fatalf("unexpected call resolution: %+v", graph.Calls)
+	}
+	architecture := facts["architecture"].(map[string]any)
+	if react := architecture["react"].(react.Facts); len(react.Components) != 2 || len(react.Links) != 1 || react.Links[0].Resolution != "resolved" {
+		t.Fatalf("missing React component with a JSX initializer: %+v", react)
+	}
+	svelte := architecture["svelte"].(svelte.Facts)
+	if len(svelte.Components) != 2 || len(svelte.Links) != 2 ||
+		svelte.Links[0].To != "src/Widget.svelte" || svelte.Links[0].Resolution != "import-candidate" ||
+		svelte.Links[1].To != "" || svelte.Links[0].Line != 2 {
+		t.Fatalf("unexpected Svelte markup evidence: %+v", svelte)
+	}
+	for _, edge := range facts["files"].(map[string]any)["imports"].([]script.Import) {
+		if edge.Specifier == "$lib/state" && edge.Resolution == "convention-candidate" && edge.TargetFile == "src/lib/state.ts" {
+			return
+		}
+	}
+	t.Fatal("missing SvelteKit default layout candidate")
 }

@@ -29,14 +29,14 @@ func bindPattern(part source.Fragment, node *sitter.Node, scope map[string][]*bi
 		bindPattern(part, node.ChildByFieldName("left"), scope)
 	case "pair_pattern":
 		bindPattern(part, node.ChildByFieldName("value"), scope)
-	case "formal_parameters", "array_pattern", "object_pattern", "rest_pattern":
+	case "formal_parameters", "array_pattern", "object_pattern", "rest_pattern", "parenthesized_expression":
 		for i := uint(0); i < node.NamedChildCount(); i++ {
 			bindPattern(part, node.NamedChild(i), scope)
 		}
 	}
 }
 
-func localBindings(part source.Fragment, node *sitter.Node) map[string][]*binding {
+func localBindings(part source.Fragment, node *sitter.Node, writes map[string]bool) map[string][]*binding {
 	scope := map[string][]*binding{}
 	for i := uint(0); i < node.NamedChildCount(); i++ {
 		item := node.NamedChild(i)
@@ -54,7 +54,11 @@ func localBindings(part source.Fragment, node *sitter.Node) map[string][]*bindin
 		case "function_declaration", "generator_function_declaration":
 			if id := item.ChildByFieldName("name"); id != nil && !item.HasError() {
 				name := id.Utf8Text(part.Bytes)
-				scope[name] = append(scope[name], &binding{symbol: symbolID(part, item)})
+				var candidate *binding
+				if !writes[name] {
+					candidate = &binding{symbol: symbolID(part, item)}
+				}
+				scope[name] = append(scope[name], candidate)
 			}
 		case "class_declaration", "enum_declaration":
 			bindPattern(part, item.ChildByFieldName("name"), scope)
@@ -127,7 +131,7 @@ func addImport(part source.Fragment, item *sitter.Node, scope map[string][]*bind
 	}
 }
 
-func addExports(part source.Fragment, node *sitter.Node, scope, exports map[string][]*binding) {
+func addExports(part source.Fragment, node *sitter.Node, scope, exports map[string][]*binding, stars *[]string) {
 	add := func(name *sitter.Node, exported string) {
 		if name == nil || name.Kind() != "identifier" {
 			return
@@ -136,12 +140,20 @@ func addExports(part source.Fragment, node *sitter.Node, scope, exports map[stri
 		if exported == "" {
 			exported = local
 		}
-		exports[exported] = append(exports[exported], scope[local]...)
+		candidates := scope[local]
+		if len(candidates) == 0 {
+			candidates = []*binding{nil}
+		}
+		exports[exported] = append(exports[exported], candidates...)
 	}
 	for i := uint(0); i < node.NamedChildCount(); i++ {
 		item := node.NamedChild(i)
-		if item.Kind() != "export_statement" || item.ChildByFieldName("source") != nil {
+		if item.Kind() != "export_statement" || hasToken(item, "type") || item.HasError() {
 			continue
+		}
+		module, from := source.String(item.ChildByFieldName("source"), part.Bytes)
+		if from && hasToken(item, "*") {
+			*stars = append(*stars, module)
 		}
 		if hasToken(item, "default") {
 			name := item.ChildByFieldName("value")
@@ -179,8 +191,45 @@ func addExports(part source.Fragment, node *sitter.Node, scope, exports map[stri
 				if alias := spec.ChildByFieldName("alias"); alias != nil {
 					exported = alias.Utf8Text(part.Bytes)
 				}
-				add(spec.ChildByFieldName("name"), exported)
+				name := spec.ChildByFieldName("name")
+				if from && name != nil {
+					local := name.Utf8Text(part.Bytes)
+					if exported == "" {
+						exported = local
+					}
+					exports[exported] = append(exports[exported], &binding{module: module, exported: local})
+				} else {
+					add(name, exported)
+				}
 			}
 		}
 	}
+}
+
+// Track writes conservatively across the file, including writes in nested
+// closures that could run before a call. This deliberately does not infer order.
+func writtenNames(part source.Fragment, root *sitter.Node) map[string]bool {
+	names := map[string]bool{}
+	var visit func(*sitter.Node)
+	visit = func(node *sitter.Node) {
+		var target *sitter.Node
+		switch node.Kind() {
+		case "assignment_expression", "augmented_assignment_expression", "for_in_statement":
+			target = node.ChildByFieldName("left")
+		case "update_expression":
+			target = node.ChildByFieldName("argument")
+		}
+		if target != nil {
+			bindings := map[string][]*binding{}
+			bindPattern(part, target, bindings)
+			for name := range bindings {
+				names[name] = true
+			}
+		}
+		for i := uint(0); i < node.NamedChildCount(); i++ {
+			visit(node.NamedChild(i))
+		}
+	}
+	visit(root)
+	return names
 }

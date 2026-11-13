@@ -73,3 +73,27 @@ func Imports(fragment source.Fragment, root *sitter.Node) []Import {
 	}
 	return result
 }
+
+// DefaultImports returns local names for statically declared default imports.
+func DefaultImports(fragment source.Fragment, root *sitter.Node) map[string][]string {
+	result := map[string][]string{}
+	for i := uint(0); i < root.NamedChildCount(); i++ {
+		node := root.NamedChild(i)
+		if node.Kind() != "import_statement" || hasToken(node, "type") || node.HasError() {
+			continue
+		}
+		module, ok := source.String(node.ChildByFieldName("source"), fragment.Bytes)
+		if !ok {
+			continue
+		}
+		clause := node.NamedChild(0)
+		if clause == nil || clause.Kind() != "import_clause" {
+			continue
+		}
+		if name := clause.NamedChild(0); name != nil && name.Kind() == "identifier" {
+			local := name.Utf8Text(fragment.Bytes)
+			result[local] = append(result[local], module)
+		}
+	}
+	return result
+}
