@@ -20,6 +20,7 @@ cat > "$package/engine.json" <<MANIFEST
   "capabilities": {
     "languages": ["TypeScript", "TSX", "JavaScript", "JSX", "Svelte"],
     "operations": ["scan"],
+    "resolveFacts": ["files", "call-graph"],
     "scanFacts": ["dependencies", "architecture", "files", "ipc", "call-graph"]
   },
   "library": "bin/libscryer-ts-js-engine.dylib",

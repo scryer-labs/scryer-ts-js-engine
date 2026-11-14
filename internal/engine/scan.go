@@ -40,7 +40,7 @@ var languages = map[string]string{
 	".ts": "TypeScript", ".mts": "TypeScript", ".cts": "TypeScript", ".tsx": "TSX", ".svelte": "Svelte",
 }
 
-func scanProject(ctx context.Context, root string, selected []string) (map[string]any, error) {
+func scanProject(ctx context.Context, root string, selected []string, resolveMode ...bool) (map[string]any, error) {
 	fsys := os.DirFS(root)
 	packages := map[string]string{}
 	packageManifests := map[string]manifest{}
@@ -239,6 +239,9 @@ func scanProject(ctx context.Context, root string, selected []string) (map[strin
 		ipc := framework.Facts()
 		ipc["limitations"] = []string{"dynamic-channel-names", "tauri-wrapper-flow"}
 		facts["ipc"] = ipc
+	}
+	if len(resolveMode) == 1 && resolveMode[0] && (wantFiles || wantCalls) {
+		enrichSemantic(ctx, root, files, facts)
 	}
 	return facts, nil
 }

@@ -30,15 +30,16 @@ type Symbol struct {
 }
 
 type Call struct {
-	ID           string        `json:"callSiteId"`
-	Caller       string        `json:"callerSymbolId,omitempty"`
-	Callee       string        `json:"callee"`
-	Target       string        `json:"targetSymbolId,omitempty"`
-	Resolution   string        `json:"resolution"`
-	Reason       string        `json:"resolutionReason,omitempty"`
-	TestEvidence *TestEvidence `json:"testEvidence,omitempty"`
-	Site         Range         `json:"site"`
-	binding      *binding
+	SemanticTarget string        `json:"semanticTargetSymbolId,omitempty"`
+	ID             string        `json:"callSiteId"`
+	Caller         string        `json:"callerSymbolId,omitempty"`
+	Callee         string        `json:"callee"`
+	Target         string        `json:"targetSymbolId,omitempty"`
+	Resolution     string        `json:"resolution"`
+	Reason         string        `json:"resolutionReason,omitempty"`
+	TestEvidence   *TestEvidence `json:"testEvidence,omitempty"`
+	Site           Range         `json:"site"`
+	binding        *binding
 }
 
 // TestEvidence marks the registration call, without classifying its enclosing file.
@@ -68,6 +69,7 @@ func testEvidence(candidate *binding) *TestEvidence {
 }
 
 type Graph struct {
+	Semantic    any      `json:"semantic,omitempty"`
 	ProjectID   string   `json:"projectId"`
 	Basis       string   `json:"basis"`
 	Symbols     []Symbol `json:"symbols"`

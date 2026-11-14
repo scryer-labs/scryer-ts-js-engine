@@ -12,6 +12,7 @@ import (
 )
 
 type Import struct {
+	SemanticTarget string `json:"semanticTargetFile,omitempty"`
 	source.Location
 	Specifier  string `json:"specifier"`
 	Kind       string `json:"kind"`

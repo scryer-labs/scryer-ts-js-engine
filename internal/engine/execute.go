@@ -79,7 +79,7 @@ func (r Request) scan(ctx context.Context) (*report, *protocolError) {
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		return nil, &protocolError{"INVALID_REQUEST", "scan repository must be an existing directory"}
 	}
-	result, err := scanProject(ctx, root, selected)
+	result, err := scanProject(ctx, root, selected, r.Scan.Static != nil && !*r.Scan.Static)
 	if err != nil {
 		return nil, &protocolError{"TS_JS_SCAN_ERROR", err.Error()}
 	}
