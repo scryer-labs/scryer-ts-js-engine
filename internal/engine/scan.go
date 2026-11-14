@@ -41,7 +41,7 @@ var languages = map[string]string{
 	".ts": "TypeScript", ".mts": "TypeScript", ".cts": "TypeScript", ".tsx": "TSX", ".svelte": "Svelte",
 }
 
-func scanProject(ctx context.Context, root string, selected []string, resolveMode ...bool) (map[string]any, error) {
+func scanProject(ctx context.Context, root string, selected []string, resolveMode bool) (map[string]any, error) {
 	fsys := os.DirFS(root)
 	packages := map[string]string{}
 	packageManifests := map[string]manifest{}
@@ -237,7 +237,7 @@ func scanProject(ctx context.Context, root string, selected []string, resolveMod
 		})
 	}
 	var resolution *semantic.Report
-	if len(resolveMode) == 1 && resolveMode[0] && (wantFiles || wantCalls || wantIPC) {
+	if resolveMode && (wantFiles || wantCalls || wantIPC) {
 		result := enrichSemantic(ctx, root, files, facts, framework)
 		resolution = &result
 	}

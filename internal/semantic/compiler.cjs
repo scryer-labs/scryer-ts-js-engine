@@ -13,10 +13,8 @@ const local = file => {
 
 function resolve() {
   const configs = new Set();
-  const compilerRoots = new Set();
   for (const file of files) {
     for (let dir = path.dirname(path.join(root, file)); local(dir) || dir === root; dir = path.dirname(dir)) {
-      if (fs.existsSync(path.join(dir, "package.json"))) compilerRoots.add(dir);
       const config = path.join(dir, "tsconfig.json");
       if (fs.existsSync(config)) configs.add(config);
       if (dir === root) break;
@@ -24,8 +22,8 @@ function resolve() {
   }
   const explicitTools = process.env.SCRYER_TS_TOOLCHAIN;
   const localTools = path.join(process.env.SCRYER_HOME || path.join(os.homedir(), ".config", "scryer"), "ts-toolchain");
-  const loaders = [explicitTools, localTools, ...compilerRoots, root]
-    .filter(Boolean).map(dir => createRequire(path.resolve(dir, "package.json")));
+  const loaders = [...new Set([explicitTools, localTools].filter(Boolean))]
+    .map(dir => createRequire(path.resolve(dir, "package.json")));
   function dependency(name) {
     for (const load of loaders) {
       try { return load(name); }
@@ -34,7 +32,7 @@ function resolve() {
   }
   const ts = dependency("typescript");
   if (!ts) {
-    report.message = "TypeScript Compiler API is unavailable in the project";
+    report.message = "TypeScript Compiler API is unavailable in the Scryer toolchain";
     return;
   }
   if (!configs.size) {

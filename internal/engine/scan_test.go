@@ -39,7 +39,7 @@ dispatch(dynamic);
 			t.Fatal(err)
 		}
 	}
-	facts, err := scanProject(context.Background(), root, []string{"architecture", "dependencies", "files", "ipc"})
+	facts, err := scanProject(context.Background(), root, []string{"architecture", "dependencies", "files", "ipc"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ export default App;`,
 			t.Fatal(err)
 		}
 	}
-	report, err := scanProject(context.Background(), root, []string{"architecture"})
+	report, err := scanProject(context.Background(), root, []string{"architecture"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ export default App;`,
 	if dynamic := facts.Links[4]; dynamic.Resolution != "dynamic" || dynamic.To != "" {
 		t.Fatalf("unexpected dynamic link: %+v", dynamic)
 	}
-	filesReport, err := scanProject(context.Background(), root, []string{"files"})
+	filesReport, err := scanProject(context.Background(), root, []string{"files"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ function shadow(verify: () => void) { verify(); }
 			t.Fatal(err)
 		}
 	}
-	facts, err := scanProject(context.Background(), root, []string{"architecture", "call-graph", "files"})
+	facts, err := scanProject(context.Background(), root, []string{"architecture", "call-graph", "files"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
