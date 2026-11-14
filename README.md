@@ -50,3 +50,25 @@ test runner globals, or runtime coverage.
 ## License
 
 [Apache License 2.0](LICENSE)
+
+## Toolchain-assisted resolution
+
+`--resolve` with `files` or `call-graph` loads the TypeScript Compiler API
+using project configuration and project references. It records semantic
+targets separately from the static target. With Svelte and its compiler
+adapter available, template calls and supported Tauri observations map back
+to the original file. `--facts ipc --resolve` enables that enrichment alone.
+
+The resolver needs Node and Scryer's toolchain dependencies, installed in
+`~/.config/scryer/ts-toolchain` (under `SCRYER_HOME` when overridden). Use
+`SCRYER_TS_TOOLCHAIN` for an explicit toolchain directory. For example:
+
+```sh
+npm install --prefix "${SCRYER_HOME:-$HOME/.config/scryer}/ts-toolchain" --ignore-scripts --save-exact \
+  typescript@6.0.3 svelte@5.57.3 svelte2tsx@0.7.62 @jridgewell/trace-mapping@0.3.31
+scryer project scan --facts files,call-graph,ipc --resolve --json --compact
+```
+
+The scan reads the project's installed declarations when available. Missing
+tools, dependencies and compiler diagnostics can yield fallback or partial
+results alongside the original static facts.
