@@ -32,6 +32,8 @@ type Report struct {
 	CompilerVersion string `json:"compilerVersion,omitempty"`
 	Programs        int    `json:"programs"`
 	Diagnostics     int    `json:"diagnostics"`
+	SvelteFiles     int    `json:"svelteFiles,omitempty"`
+	SvelteMessage   string `json:"svelteMessage,omitempty"`
 	Calls           []Edge `json:"calls,omitempty"`
 	Imports         []Edge `json:"imports,omitempty"`
 }

@@ -21,15 +21,16 @@ function resolve() {
       if (dir === root) break;
     }
   }
-  let ts;
-  for (const dir of [...compilerRoots, root]) {
-    try {
-      ts = createRequire(path.join(dir, "package.json"))("typescript");
-      break;
-    } catch (error) {
-      if (error.code !== "MODULE_NOT_FOUND") throw error;
+  const explicitTools = process.env.SCRYER_TS_TOOLCHAIN;
+  const loaders = [explicitTools, ...compilerRoots, root]
+    .filter(Boolean).map(dir => createRequire(path.resolve(dir, "package.json")));
+  function dependency(name) {
+    for (const load of loaders) {
+      try { return load(name); }
+      catch (error) { if (error.code !== "MODULE_NOT_FOUND") throw error; }
     }
   }
+  const ts = dependency("typescript");
   if (!ts) {
     report.message = "TypeScript Compiler API is unavailable in the project";
     return;
@@ -39,7 +40,37 @@ function resolve() {
     return;
   }
 
+  const svelteFiles = files.filter(file => file.endsWith(".svelte"));
+  const virtual = new Map();
+  let svelteMessage;
+  if (svelteFiles.length) {
+    const convert = dependency("svelte2tsx")?.svelte2tsx;
+    const mapping = dependency("@jridgewell/trace-mapping");
+    if (!convert || !mapping) svelteMessage = "Svelte compiler adapter or source-map reader is unavailable";
+    else for (const file of svelteFiles) {
+      const filename = path.join(root, file);
+      try {
+        const original = fs.readFileSync(filename, "utf8");
+        const transformed = convert(original, { filename, isTsFile: /<script\b[^>]*\blang=["'](?:ts|typescript)["']/.test(original) });
+        virtual.set(filename + ".__scryer.ts", { original, filename, transformed, map: new mapping.TraceMap(transformed.map),
+          lines: original.split(/\r?\n/), mapPosition: mapping.originalPositionFor });
+      } catch (error) {
+        svelteMessage = String(error);
+      }
+    }
+  }
+  report.svelteFiles = virtual.size;
+  if (svelteMessage) report.svelteMessage = svelteMessage;
+
   function position(file, offset) {
+    const generated = virtual.get(file.fileName);
+    if (generated) {
+      const at = file.getLineAndCharacterOfPosition(offset);
+      const mapped = generated.mapPosition(generated.map, { line: at.line + 1, column: at.character });
+      if (mapped.line == null || mapped.column == null) return null;
+      return {file: local(generated.filename), line: mapped.line,
+        column: Buffer.byteLength(generated.lines[mapped.line - 1].slice(0, mapped.column)) + 1};
+    }
     const name = local(file.fileName);
     if (!name) return null;
     const point = file.getLineAndCharacterOfPosition(offset);
@@ -61,21 +92,32 @@ function resolve() {
     for (const reference of parsed.projectReferences ?? []) {
       readConfig(ts.resolveProjectReferencePath(reference));
     }
-    const rootNames = parsed.fileNames.filter(file => sourcePaths.has(local(file)));
+    const rootNames = parsed.fileNames.filter(file => sourcePaths.has(local(file)) && !file.endsWith(".svelte"));
+    for (const [file, input] of virtual) {
+      if (!path.relative(path.dirname(config), input.filename).startsWith("..")) rootNames.push(file);
+    }
     if (!rootNames.length) return;
     const options = { ...parsed.options, noEmit: true };
-    const program = ts.createProgram({ rootNames, options, projectReferences: parsed.projectReferences });
+    const host = ts.createCompilerHost(options);
+    const originalGet = host.getSourceFile.bind(host);
+    host.getSourceFile = (name, version, ...args) => {
+      const input = virtual.get(name);
+      return input ? ts.createSourceFile(name, input.transformed.code, version, true, ts.ScriptKind.TS)
+        : originalGet(name, version, ...args);
+    };
+    const program = ts.createProgram({ rootNames, options, projectReferences: parsed.projectReferences, host });
     const checker = program.getTypeChecker();
     report.programs++;
     report.diagnostics += program.getSyntacticDiagnostics().length + program.getSemanticDiagnostics().length;
     const cache = ts.createModuleResolutionCache(path.dirname(config), file => file, options);
     for (const file of program.getSourceFiles()) {
-      if (file.isDeclarationFile || !sourcePaths.has(local(file.fileName))) continue;
+      if (file.isDeclarationFile || (!sourcePaths.has(local(file.fileName)) && !virtual.has(file.fileName))) continue;
       function visit(node) {
         if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
           const target = ts.resolveModuleName(node.moduleSpecifier.text, file.fileName, options, ts.sys, cache).resolvedModule;
           const name = target && local(target.resolvedFileName);
-          if (name && sourcePaths.has(name)) report.imports.push({ site: position(file, node.getStart(file)), target: { file: name, line: 1, column: 1 } });
+          const site = position(file, node.getStart(file));
+          if (site && name && sourcePaths.has(name)) report.imports.push({ site, target: { file: name, line: 1, column: 1 } });
         }
         if (ts.isCallExpression(node)) {
           const decl = checker.getResolvedSignature(node)?.declaration;
@@ -83,7 +125,8 @@ function resolve() {
           // without an implementation cannot prove a destination.
           if (decl?.body) {
             const target = position(decl.getSourceFile(), decl.getStart());
-            if (target && sourcePaths.has(target.file)) report.calls.push({ site: position(file, node.getStart(file)), target });
+            const site = position(file, node.getStart(file));
+            if (site && target && sourcePaths.has(target.file)) report.calls.push({ site, target });
           }
         }
         ts.forEachChild(node, visit);
@@ -92,7 +135,7 @@ function resolve() {
     }
   }
   for (const config of configs) readConfig(config);
-  report.status = report.programs ? (report.diagnostics ? "partial" : "resolved") : "fallback";
+  report.status = report.programs ? ((report.diagnostics || svelteMessage) ? "partial" : "resolved") : "fallback";
   if (!report.programs) report.message = "no configured TypeScript source files found";
   report.compilerVersion = ts.version;
 }

@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"slices"
-	"strings"
 
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/script"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/semantic"
@@ -12,9 +11,7 @@ import (
 func enrichSemantic(ctx context.Context, root string, files []fileFact, facts map[string]any) {
 	paths := make([]string, 0, len(files))
 	for _, file := range files {
-		if !strings.HasSuffix(file.Path, ".svelte") {
-			paths = append(paths, file.Path)
-		}
+		paths = append(paths, file.Path)
 	}
 	result := semantic.Resolve(ctx, root, paths)
 	calls, imports := uniqueTargets(result.Calls), uniqueTargets(result.Imports)
