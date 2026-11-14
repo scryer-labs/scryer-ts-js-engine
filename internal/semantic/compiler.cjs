@@ -1,10 +1,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { createRequire } = require("node:module");
+const os = require("node:os");
 
 const root = path.resolve(process.argv[1]);
 const files = JSON.parse(fs.readFileSync(0, "utf8"));
-const report = { basis: "typescript-compiler", status: "fallback", programs: 0, diagnostics: 0, calls: [], imports: [] };
+const report = { basis: "typescript-compiler", status: "fallback", programs: 0, diagnostics: 0, calls: [], imports: [], endpoints: [] };
 const local = file => {
   const rel = path.relative(root, file);
   return rel && rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel) ? rel.split(path.sep).join("/") : "";
@@ -22,7 +23,8 @@ function resolve() {
     }
   }
   const explicitTools = process.env.SCRYER_TS_TOOLCHAIN;
-  const loaders = [explicitTools, ...compilerRoots, root]
+  const localTools = path.join(process.env.SCRYER_HOME || path.join(os.homedir(), ".config", "scryer"), "ts-toolchain");
+  const loaders = [explicitTools, localTools, ...compilerRoots, root]
     .filter(Boolean).map(dir => createRequire(path.resolve(dir, "package.json")));
   function dependency(name) {
     for (const load of loaders) {
@@ -53,7 +55,8 @@ function resolve() {
         const original = fs.readFileSync(filename, "utf8");
         const transformed = convert(original, { filename, isTsFile: /<script\b[^>]*\blang=["'](?:ts|typescript)["']/.test(original) });
         virtual.set(filename + ".__scryer.ts", { original, filename, transformed, map: new mapping.TraceMap(transformed.map),
-          lines: original.split(/\r?\n/), mapPosition: mapping.originalPositionFor });
+          lines: original.split(/\r?\n/), mapPosition: mapping.originalPositionFor,
+          segments: mapping.decodedMappings(new mapping.TraceMap(transformed.map)) });
       } catch (error) {
         svelteMessage = String(error);
       }
@@ -68,6 +71,8 @@ function resolve() {
       const at = file.getLineAndCharacterOfPosition(offset);
       const mapped = generated.mapPosition(generated.map, { line: at.line + 1, column: at.character });
       if (mapped.line == null || mapped.column == null) return null;
+      const segment = generated.segments[at.line]?.find(segment => segment[0] === at.character && segment.length >= 4);
+      if (!segment) return null;
       return {file: local(generated.filename), line: mapped.line,
         column: Buffer.byteLength(generated.lines[mapped.line - 1].slice(0, mapped.column)) + 1};
     }
@@ -98,6 +103,15 @@ function resolve() {
     }
     if (!rootNames.length) return;
     const options = { ...parsed.options, noEmit: true };
+    if (virtual.size && !options.paths?.["$lib/*"] && fs.existsSync(path.join(path.dirname(config), "src/lib")) &&
+        fs.existsSync(path.join(path.dirname(config), "svelte.config.js"))) {
+      // Use the default layout only for a config with no explicit override in
+      // its source or inherited TypeScript path aliases.
+      const svelteConfig = fs.readFileSync(path.join(path.dirname(config), "svelte.config.js"), "utf8");
+      if (!/\b(?:alias|files)\s*:|\.\.\./.test(svelteConfig)) {
+        options.paths = { ...options.paths, "$lib/*": [path.join(path.dirname(config), "src/lib/*")] };
+      }
+    }
     const host = ts.createCompilerHost(options);
     const originalGet = host.getSourceFile.bind(host);
     host.getSourceFile = (name, version, ...args) => {
@@ -112,6 +126,29 @@ function resolve() {
     const cache = ts.createModuleResolutionCache(path.dirname(config), file => file, options);
     for (const file of program.getSourceFiles()) {
       if (file.isDeclarationFile || (!sourcePaths.has(local(file.fileName)) && !virtual.has(file.fileName))) continue;
+      function observeTauri(node) {
+        const expression = node.expression;
+        const name = ts.isPropertyAccessExpression(expression) ? expression.name : expression;
+        const binding = checker.getSymbolAtLocation(name);
+        for (const declaration of binding?.declarations ?? []) {
+          if (!ts.isImportSpecifier(declaration) || declaration.isTypeOnly || declaration.parent.parent.isTypeOnly) continue;
+          const module = declaration.parent.parent.parent.moduleSpecifier?.text;
+          const exported = (declaration.propertyName || declaration.name).text;
+          const kind = module === "@tauri-apps/api/core" && exported === "invoke" ? "command" :
+            module === "@tauri-apps/api/event" && ["listen", "emit"].includes(exported) ? "event" : "";
+          if (!kind) continue;
+          let argument = node.arguments[0];
+          if (argument && ts.isIdentifier(argument)) {
+            const declarations = checker.getSymbolAtLocation(argument)?.declarations ?? [];
+            if (declarations.length === 1 && ts.isVariableDeclaration(declarations[0]) &&
+                (declarations[0].parent.flags & ts.NodeFlags.Const)) argument = declarations[0].initializer;
+          }
+          const site = position(file, node.getStart(file));
+          if (site && argument && ts.isStringLiteralLike(argument) && argument.text) {
+            report.endpoints.push({ ...site, kind, role: exported, name: argument.text });
+          }
+        }
+      }
       function visit(node) {
         if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
           const target = ts.resolveModuleName(node.moduleSpecifier.text, file.fileName, options, ts.sys, cache).resolvedModule;
@@ -120,13 +157,14 @@ function resolve() {
           if (site && name && sourcePaths.has(name)) report.imports.push({ site, target: { file: name, line: 1, column: 1 } });
         }
         if (ts.isCallExpression(node)) {
+          if (virtual.has(file.fileName)) observeTauri(node);
           const decl = checker.getResolvedSignature(node)?.declaration;
           // Require a concrete source body. Type-only contracts and overloads
           // without an implementation cannot prove a destination.
           if (decl?.body) {
             const target = position(decl.getSourceFile(), decl.getStart());
             const site = position(file, node.getStart(file));
-            if (site && target && sourcePaths.has(target.file)) report.calls.push({ site, target });
+            if (site && target && sourcePaths.has(target.file)) report.calls.push({ site, target, end: position(file, node.expression.end - 1), callee: node.expression.getText(file) });
           }
         }
         ts.forEachChild(node, visit);

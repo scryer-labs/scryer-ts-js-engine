@@ -21,21 +21,31 @@ type Position struct {
 }
 
 type Edge struct {
-	Site   Position `json:"site"`
-	Target Position `json:"target"`
+	End    *Position `json:"end,omitempty"`
+	Callee string    `json:"callee,omitempty"`
+	Site   Position  `json:"site"`
+	Target Position  `json:"target"`
+}
+
+type Endpoint struct {
+	Position
+	Kind string `json:"kind"`
+	Role string `json:"role"`
+	Name string `json:"name"`
 }
 
 type Report struct {
-	Basis           string `json:"basis"`
-	Status          string `json:"status"`
-	Message         string `json:"message,omitempty"`
-	CompilerVersion string `json:"compilerVersion,omitempty"`
-	Programs        int    `json:"programs"`
-	Diagnostics     int    `json:"diagnostics"`
-	SvelteFiles     int    `json:"svelteFiles,omitempty"`
-	SvelteMessage   string `json:"svelteMessage,omitempty"`
-	Calls           []Edge `json:"calls,omitempty"`
-	Imports         []Edge `json:"imports,omitempty"`
+	Basis           string     `json:"basis"`
+	Status          string     `json:"status"`
+	Message         string     `json:"message,omitempty"`
+	CompilerVersion string     `json:"compilerVersion,omitempty"`
+	Programs        int        `json:"programs"`
+	Diagnostics     int        `json:"diagnostics"`
+	SvelteFiles     int        `json:"svelteFiles,omitempty"`
+	SvelteMessage   string     `json:"svelteMessage,omitempty"`
+	Calls           []Edge     `json:"calls,omitempty"`
+	Imports         []Edge     `json:"imports,omitempty"`
+	Endpoints       []Endpoint `json:"endpoints,omitempty"`
 }
 
 func Resolve(ctx context.Context, root string, files []string) Report {

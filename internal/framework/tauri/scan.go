@@ -37,6 +37,26 @@ func (c *Collector) Facts() map[string]any {
 	return map[string]any{"basis": "static-source", "tauri": map[string]any{"apps": c.apps}}
 }
 
+// Add stores source-mapped observations produced by the language toolchain.
+func (c *Collector) Add(endpoint Endpoint) {
+	config := c.config(path.Dir(endpoint.File))
+	if config == "" {
+		return
+	}
+	i, exists := c.index[config]
+	if !exists {
+		i = len(c.apps)
+		c.index[config] = i
+		c.apps = append(c.apps, App{Config: config})
+	}
+	for _, previous := range c.apps[i].Endpoints {
+		if previous == endpoint {
+			return
+		}
+	}
+	c.apps[i].Endpoints = append(c.apps[i].Endpoints, endpoint)
+}
+
 type binding struct {
 	kind string
 	role string
@@ -92,13 +112,7 @@ func (c *Collector) Observe(ctx context.Context, fragment source.Fragment, root 
 		if !ok || event == "" {
 			return
 		}
-		i, exists := c.index[config]
-		if !exists {
-			i = len(c.apps)
-			c.index[config] = i
-			c.apps = append(c.apps, App{Config: config})
-		}
-		c.apps[i].Endpoints = append(c.apps[i].Endpoints, Endpoint{fragment.Location(node), match.kind, match.role, event})
+		c.Add(Endpoint{fragment.Location(node), match.kind, match.role, event})
 	})
 }
 

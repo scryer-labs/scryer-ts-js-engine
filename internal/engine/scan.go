@@ -16,6 +16,7 @@ import (
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/framework/svelte"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/framework/tauri"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/script"
+	"github.com/scryer-labs/scryer-ts-js-engine/internal/semantic"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/source"
 )
 
@@ -235,13 +236,18 @@ func scanProject(ctx context.Context, root string, selected []string, resolveMod
 			return name != pkg.Name && pkg.declares(name)
 		})
 	}
+	var resolution *semantic.Report
+	if len(resolveMode) == 1 && resolveMode[0] && (wantFiles || wantCalls || wantIPC) {
+		result := enrichSemantic(ctx, root, files, facts, framework)
+		resolution = &result
+	}
 	if framework != nil {
 		ipc := framework.Facts()
 		ipc["limitations"] = []string{"dynamic-channel-names", "tauri-wrapper-flow"}
+		if resolution != nil {
+			ipc["semantic"] = resolution
+		}
 		facts["ipc"] = ipc
-	}
-	if len(resolveMode) == 1 && resolveMode[0] && (wantFiles || wantCalls) {
-		enrichSemantic(ctx, root, files, facts)
 	}
 	return facts, nil
 }
