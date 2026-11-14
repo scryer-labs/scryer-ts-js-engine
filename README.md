@@ -2,14 +2,28 @@
 
 A static TypeScript and JavaScript language engine for Scryer.
 
+## Install and scan
+
+With a current Scryer CLI, install or upgrade the official macOS arm64 or
+Windows amd64 package:
+
+```sh
+scryer engine install ts-js
+scryer engine upgrade ts-js
+scryer project scan /path/to/project --facts dependencies,architecture,files,ipc,call-graph --json --compact
+```
+
+For engine development, build with the Go version in `go.mod`, cgo and a C
+compiler. Install the resulting local package into Scryer:
+
 ```sh
 ./scripts/build
 scryer engine install ts-js --from "$PWD/build/install/scryer-ts-js-engine"
-scryer project scan /path/to/project --facts dependencies,architecture,files,ipc,call-graph --json
 ```
 
-The macOS package uses Go, cgo, and the Scryer C ABI. Scanning does not run
-Node, package managers, or a frontend build.
+## Static facts
+
+Static scanning reads source and manifests without Node or a frontend build.
 
 - `dependencies` reads dependency declarations in `package.json`.
 - `architecture` lists package components.
@@ -41,11 +55,11 @@ their source locations. It also follows supported re-exports and same-block
 tags. A unique default import provides an `import-candidate` link to a Svelte
 file. Template scope and dynamic component selection can change the binding.
 
-Call sites with insufficient evidence carry `resolutionReason`. Report
-`limitations` describe unsupported coverage such as dynamic calls, React
-wrappers and classes, Svelte template expressions, and dynamic IPC channel
-names. Scans do not evaluate TypeScript project references, package exports,
-test runner globals, or runtime coverage.
+Call sites with insufficient evidence carry `resolutionReason`.
+`limitations` covers dynamic calls, React wrappers and classes, Svelte
+template expressions, dynamic IPC channels, test-runner globals and coverage.
+Static import resolution has limited package-exports and project-reference
+support. The optional compiler pass below can use configured project references.
 
 ## License
 
@@ -72,3 +86,8 @@ scryer project scan --facts files,call-graph,ipc --resolve --json --compact
 The scan reads the project's installed declarations when available. Missing
 tools, dependencies and compiler diagnostics can yield fallback or partial
 results alongside the original static facts.
+
+## Release verification
+
+The [GitHub workflow](.github/workflows/ci.yml) builds the platform packages
+and exercises a scan through the ABI before publishing a version tag.
