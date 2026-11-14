@@ -1,11 +1,18 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/.."
-test "$(go env GOOS)" = darwin
+platform=$(go env GOOS)
+version=${SCRYER_ENGINE_VERSION:-0.0.0-dev}
+case "$version" in *[!0-9A-Za-z.-]*|'') exit 2 ;; esac
+case "$platform" in
+  darwin) library=libscryer-ts-js-engine.dylib ;;
+  windows) library=scryer-ts-js-engine.dll ;;
+  *) echo "Unsupported build platform: $platform" >&2; exit 1 ;;
+esac
 package=build/install/scryer-ts-js-engine
 mkdir -p "$package/bin"
-CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -o "$package/bin/libscryer-ts-js-engine.dylib" ./cmd/ts-js-engine-abi
-rm -f "$package/bin/libscryer-ts-js-engine.h"
+CGO_ENABLED=1 go build -trimpath -buildmode=c-shared -o "$package/bin/$library" ./cmd/ts-js-engine-abi
+rm -f "$package/bin/${library%.*}.h"
 cat > "$package/engine.json" <<MANIFEST
 {
   "schemaVersion": 1,
@@ -13,7 +20,7 @@ cat > "$package/engine.json" <<MANIFEST
     "protocolVersion": 1,
     "id": "ts-js",
     "name": "Scryer TS/JS Engine",
-    "version": "0.0.0-dev",
+    "version": "$version",
     "source": "github.com/scryer-labs/scryer-ts-js-engine",
     "mock": false
   },
@@ -23,8 +30,8 @@ cat > "$package/engine.json" <<MANIFEST
     "resolveFacts": ["files", "call-graph", "ipc"],
     "scanFacts": ["dependencies", "architecture", "files", "ipc", "call-graph"]
   },
-  "library": "bin/libscryer-ts-js-engine.dylib",
-  "os": "darwin",
+  "library": "bin/$library",
+  "os": "$platform",
   "arch": "$(go env GOARCH)"
 }
 MANIFEST
