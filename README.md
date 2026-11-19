@@ -119,6 +119,21 @@ Coverage is aggregate execution evidence, not assertion effectiveness or a
 causal test-to-caller path. The common JSON contract is maintained in Scryer
 Core's `docs/contracts/COVERAGE.md` and `docs/contracts/IMPACT.md`.
 
+## Known gaps
+
+- Dynamic dispatch, mutable bindings, external package targets and some
+  package-exports/project-reference patterns remain unresolved. React wrappers,
+  classes, dynamic component selection and richer Svelte/template/IPC data flow
+  are not fully modeled. Existing fact limitations remain authoritative.
+- Test-role evidence requires supported imported registrations. Runner globals
+  and test-like names alone are not classified as tests.
+- Native collection does not support arbitrary test scripts/runners. Raw V8
+  data is not accepted as transformed TS/TSX/Svelte source coverage without
+  original-source mapping. Per-test attribution and test-effectiveness/code-smell
+  rules are not implemented.
+- IPC currently covers Tauri observations, not generic REST or OS IPC APIs.
+  Native Windows runtime acceptance is deferred; platform ABI checks are narrower.
+
 ## Release verification
 
 The [GitHub workflow](.github/workflows/ci.yml) builds the platform packages
