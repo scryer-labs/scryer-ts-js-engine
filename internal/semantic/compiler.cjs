@@ -5,7 +5,7 @@ const os = require("node:os");
 
 const root = path.resolve(process.argv[1]);
 const files = JSON.parse(fs.readFileSync(0, "utf8"));
-const report = { basis: "typescript-compiler", status: "fallback", programs: 0, diagnostics: 0, calls: [], imports: [], endpoints: [] };
+const report = { basis: "typescript-compiler", status: "fallback", programs: 0, diagnostics: 0, diagnosticMessages: [], calls: [], imports: [], endpoints: [] };
 const local = file => {
   const rel = path.relative(root, file);
   return rel && rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel) ? rel.split(path.sep).join("/") : "";
@@ -88,10 +88,12 @@ function resolve() {
     const read = ts.readConfigFile(config, ts.sys.readFile);
     if (read.error) {
       report.diagnostics++;
+      report.diagnosticMessages.push(ts.flattenDiagnosticMessageText(read.error.messageText,"\n"));
       return;
     }
     const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, path.dirname(config), undefined, config);
     report.diagnostics += parsed.errors.length;
+    for (const d of parsed.errors) report.diagnosticMessages.push(ts.flattenDiagnosticMessageText(d.messageText,"\n"));
     for (const reference of parsed.projectReferences ?? []) {
       readConfig(ts.resolveProjectReferencePath(reference));
     }
@@ -100,6 +102,14 @@ function resolve() {
       if (!path.relative(path.dirname(config), input.filename).startsWith("..")) rootNames.push(file);
     }
     if (!rootNames.length) return;
+    if (virtual.size) {
+      for (const name of ['svelte2tsx/svelte-shims-v4.d.ts','svelte2tsx/svelte-jsx-v4.d.ts']) {
+        for (const load of loaders) {
+          try { const shim = load.resolve(name); if (!rootNames.includes(shim)) rootNames.push(shim); break; }
+          catch (error) { if (error.code !== 'MODULE_NOT_FOUND' && error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error; }
+        }
+      }
+    }
     const options = { ...parsed.options, noEmit: true };
     if (virtual.size && !options.paths?.["$lib/*"] && fs.existsSync(path.join(path.dirname(config), "src/lib")) &&
         fs.existsSync(path.join(path.dirname(config), "svelte.config.js"))) {
@@ -120,7 +130,12 @@ function resolve() {
     const program = ts.createProgram({ rootNames, options, projectReferences: parsed.projectReferences, host });
     const checker = program.getTypeChecker();
     report.programs++;
-    report.diagnostics += program.getSyntacticDiagnostics().length + program.getSemanticDiagnostics().length;
+    const diagnostics = [...program.getSyntacticDiagnostics(), ...program.getSemanticDiagnostics()];
+    report.diagnostics += diagnostics.length;
+    for (const d of diagnostics.slice(0, 20)) {
+      const at = d.file && d.start != null ? position(d.file,d.start) : null;
+      report.diagnosticMessages.push(`${at ? at.file+':'+at.line+':'+at.column+': ' : ''}${ts.flattenDiagnosticMessageText(d.messageText,'\n')}`);
+    }
     const cache = ts.createModuleResolutionCache(path.dirname(config), file => file, options);
     for (const file of program.getSourceFiles()) {
       if (file.isDeclarationFile || (!sourcePaths.has(local(file.fileName)) && !virtual.has(file.fileName))) continue;
@@ -162,7 +177,7 @@ function resolve() {
           if (decl?.body) {
             const target = position(decl.getSourceFile(), decl.getStart());
             const site = position(file, node.getStart(file));
-            if (site && target && sourcePaths.has(target.file)) report.calls.push({ site, target, end: position(file, node.expression.end - 1), callee: node.expression.getText(file) });
+            if (site && target && sourcePaths.has(target.file)) report.calls.push({ site, target, targetName: decl.name ? position(decl.getSourceFile(), decl.name.getStart()) : null, end: position(file, node.expression.end - 1), callee: node.expression.getText(file) });
           }
         }
         ts.forEachChild(node, visit);

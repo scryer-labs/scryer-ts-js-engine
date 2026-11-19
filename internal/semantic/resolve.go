@@ -21,10 +21,11 @@ type Position struct {
 }
 
 type Edge struct {
-	End    *Position `json:"end,omitempty"`
-	Callee string    `json:"callee,omitempty"`
-	Site   Position  `json:"site"`
-	Target Position  `json:"target"`
+	TargetName *Position `json:"targetName,omitempty"`
+	End        *Position `json:"end,omitempty"`
+	Callee     string    `json:"callee,omitempty"`
+	Site       Position  `json:"site"`
+	Target     Position  `json:"target"`
 }
 
 type Endpoint struct {
@@ -35,17 +36,18 @@ type Endpoint struct {
 }
 
 type Report struct {
-	Basis           string     `json:"basis"`
-	Status          string     `json:"status"`
-	Message         string     `json:"message,omitempty"`
-	CompilerVersion string     `json:"compilerVersion,omitempty"`
-	Programs        int        `json:"programs"`
-	Diagnostics     int        `json:"diagnostics"`
-	SvelteFiles     int        `json:"svelteFiles,omitempty"`
-	SvelteMessage   string     `json:"svelteMessage,omitempty"`
-	Calls           []Edge     `json:"calls,omitempty"`
-	Imports         []Edge     `json:"imports,omitempty"`
-	Endpoints       []Endpoint `json:"endpoints,omitempty"`
+	Basis              string     `json:"basis"`
+	Status             string     `json:"status"`
+	Message            string     `json:"message,omitempty"`
+	CompilerVersion    string     `json:"compilerVersion,omitempty"`
+	Programs           int        `json:"programs"`
+	DiagnosticMessages []string   `json:"diagnosticMessages,omitempty"`
+	Diagnostics        int        `json:"diagnostics"`
+	SvelteFiles        int        `json:"svelteFiles,omitempty"`
+	SvelteMessage      string     `json:"svelteMessage,omitempty"`
+	Calls              []Edge     `json:"calls,omitempty"`
+	Imports            []Edge     `json:"imports,omitempty"`
+	Endpoints          []Endpoint `json:"endpoints,omitempty"`
 }
 
 func Resolve(ctx context.Context, root string, files []string) Report {

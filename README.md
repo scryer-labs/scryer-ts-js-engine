@@ -1,6 +1,6 @@
 # scryer-ts-js-engine
 
-A static TypeScript and JavaScript language engine for Scryer.
+A TypeScript and JavaScript fact and analysis engine for Scryer.
 
 ## Install and scan
 
@@ -87,7 +87,39 @@ The scan reads the project's installed declarations when available. Missing
 tools, dependencies and compiler diagnostics can yield fallback or partial
 results alongside the original static facts.
 
+## Coverage and change impact
+
+With a current Core CLI and this engine:
+
+```sh
+scryer project analyze --operations coverage -o coverage.html
+scryer project analyze --resolve --operations impact,coverage -o impact.html
+scryer project analyze --json --compact
+```
+
+Impact defaults to static scan evidence; `--resolve` also runs native tests and
+collects after-snapshot coverage. Failed dynamic resolution/tests/coverage stop
+analysis without static fallback. Core owns snapshot comparison, traversal and
+report rendering; the engine supplies shared scan projections and normalized
+JSON coverage. Multi-engine projects use the same command; CMake target selectors
+belong to C++ and are not interpreted here.
+
+Requires Node/npm and installed project test dependencies. Coverage supports
+Vitest with matching `@vitest/coverage-v8`, Jest remapped Istanbul statements,
+and untransformed native `node --test` V8 offsets. Import accepts Istanbul or
+V8 JSON with these mapping limits. No unknown runner or missing mapping is
+silently accepted. Dynamic impact reuses the TypeScript/Svelte scan resolver
+and requires successful diagnostics. Snapshot dependency reuse requires identical
+manifests/lockfiles; otherwise npm lockfiles use offline `npm ci --ignore-scripts`.
+Imported test registrations can mark callbacks; globals/names alone cannot.
+
+Native runtime acceptance currently targets macOS. Windows package builds and
+ABI smoke checks do not establish equivalent runtime toolchain acceptance.
+Coverage is aggregate execution evidence, not assertion effectiveness or a
+causal test-to-caller path. The common JSON contract is maintained in Scryer
+Core's `docs/contracts/COVERAGE.md` and `docs/contracts/IMPACT.md`.
+
 ## Release verification
 
 The [GitHub workflow](.github/workflows/ci.yml) builds the platform packages
-and exercises a scan through the ABI before publishing a version tag.
+and exercises scan, static impact and coverage import through the ABI before publishing a version tag.

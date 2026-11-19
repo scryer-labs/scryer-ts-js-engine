@@ -26,7 +26,7 @@ cat > "$package/engine.json" <<MANIFEST
   },
   "capabilities": {
     "languages": ["TypeScript", "TSX", "JavaScript", "JSX", "Svelte"],
-    "operations": ["scan"],
+    "operations": ["scan", "coverage", "impact"],
     "resolveFacts": ["files", "call-graph", "ipc"],
     "scanFacts": ["dependencies", "architecture", "files", "ipc", "call-graph"]
   },

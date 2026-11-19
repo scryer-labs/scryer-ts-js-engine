@@ -35,6 +35,20 @@ func enrichSemantic(ctx context.Context, root string, files []fileFact, facts ma
 		symbols := map[semantic.Position]string{}
 		for _, symbol := range graph.Symbols {
 			symbols[position(symbol.Definition)] = symbol.ID
+			if symbol.NameLocation != nil {
+				symbols[position(*symbol.NameLocation)] = symbol.ID
+			}
+		}
+		names := map[semantic.Position]semantic.Position{}
+		ambiguous := map[semantic.Position]bool{}
+		for _, edge := range observations {
+			if edge.TargetName != nil {
+				if previous, exists := names[edge.Site]; exists && previous != *edge.TargetName {
+					ambiguous[edge.Site] = true
+				} else {
+					names[edge.Site] = *edge.TargetName
+				}
+			}
 		}
 		existing := map[semantic.Position]bool{}
 		for i := range graph.Calls {
@@ -42,6 +56,8 @@ func enrichSemantic(ctx context.Context, root string, files []fileFact, facts ma
 			existing[position(call.Site)] = true
 			if target := symbols[calls[position(call.Site)]]; target != "" {
 				call.SemanticTarget = target
+			} else if !ambiguous[position(call.Site)] && calls[position(call.Site)] != (semantic.Position{}) {
+				call.SemanticTarget = symbols[names[position(call.Site)]]
 			}
 		}
 		for _, edge := range observations {

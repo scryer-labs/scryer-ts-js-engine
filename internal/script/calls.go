@@ -23,10 +23,16 @@ type Range struct {
 }
 
 type Symbol struct {
-	ID         string `json:"symbolId"`
-	Name       string `json:"name,omitempty"`
-	Kind       string `json:"kind"`
-	Definition Range  `json:"definition"`
+	NameLocation       *Range `json:"nameLocation,omitempty"`
+	ImpactKey          string `json:"-"`
+	ImpactSignature    string `json:"-"`
+	ImpactFingerprint  string `json:"-"`
+	ImpactSource       string `json:"-"`
+	ImpactRegistration string `json:"-"`
+	ID                 string `json:"symbolId"`
+	Name               string `json:"name,omitempty"`
+	Kind               string `json:"kind"`
+	Definition         Range  `json:"definition"`
 }
 
 type Call struct {
@@ -69,12 +75,14 @@ func testEvidence(candidate *binding) *TestEvidence {
 }
 
 type Graph struct {
-	Semantic    any      `json:"semantic,omitempty"`
-	ProjectID   string   `json:"projectId"`
-	Basis       string   `json:"basis"`
-	Symbols     []Symbol `json:"symbols"`
-	Limitations []string `json:"limitations"`
-	Calls       []Call   `json:"calls"`
+	ranges      map[string][]Range
+	Contexts    map[string]string `json:"-"`
+	Semantic    any               `json:"semantic,omitempty"`
+	ProjectID   string            `json:"projectId"`
+	Basis       string            `json:"basis"`
+	Symbols     []Symbol          `json:"symbols"`
+	Limitations []string          `json:"limitations"`
+	Calls       []Call            `json:"calls"`
 	exports     map[string]map[string][]*binding
 	stars       map[string][]string
 }
@@ -188,11 +196,18 @@ func (g *Graph) Observe(ctx context.Context, part source.Fragment, root *sitter.
 			}
 			if name != nil {
 				symbol.Name = name.Utf8Text(part.Bytes)
+				location := span(part, name)
+				symbol.NameLocation = &location
 			}
 			if node.Kind() == "arrow_function" && name == nil {
 				symbol.Kind = "lambda"
 			}
+			symbol.ImpactKey, symbol.ImpactSignature, symbol.ImpactFingerprint, symbol.ImpactSource, symbol.ImpactRegistration = impactIdentity(part, node, symbol.Name)
 			g.Symbols = append(g.Symbols, symbol)
+			if g.ranges == nil {
+				g.ranges = map[string][]Range{}
+			}
+			g.ranges[part.File] = append(g.ranges[part.File], symbol.Definition)
 			scope := map[string][]*binding{}
 			for _, field := range []string{"parameter", "parameters"} {
 				bindPattern(part, node.ChildByFieldName(field), scope)

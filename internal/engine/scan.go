@@ -196,6 +196,9 @@ func scanProject(ctx context.Context, root string, selected []string, resolveMod
 			}
 			file.SyntaxErrors = file.SyntaxErrors || hasErrors
 		}
+		if graph != nil && wantCalls {
+			graph.FileContext(file.Path, data)
+		}
 		if wantArchitecture && file.Language == "Svelte" {
 			svelteFacts.Add(file.Path, owner, tags, svelteImports, func(specifier string) string {
 				edge := script.Import{Specifier: specifier}
