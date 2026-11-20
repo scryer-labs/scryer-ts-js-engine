@@ -68,7 +68,8 @@ support. The optional compiler pass below can use configured project references.
 ## Toolchain-assisted resolution
 
 `--resolve` with `files` or `call-graph` loads the TypeScript Compiler API
-using project configuration and project references. It records semantic
+using project configuration and project references. `jsconfig.json` is also
+recognized (a same-directory `tsconfig.json` takes precedence). It records semantic
 targets separately from the static target. With Svelte and its compiler
 adapter available, template calls and supported Tauri observations map back
 to the original file. `--facts ipc --resolve` enables that enrichment alone.
@@ -82,6 +83,20 @@ npm install --prefix "${SCRYER_HOME:-$HOME/.config/scryer}/ts-toolchain" --ignor
   typescript@6.0.3 svelte@5.57.3 svelte2tsx@0.7.62 @jridgewell/trace-mapping@0.3.31
 scryer project scan --facts files,call-graph,ipc --resolve --json --compact
 ```
+
+For JavaScript-only `.js`, `.mjs`, `.cjs` and `.jsx` source with no project
+configuration, the resolver creates an in-memory NodeNext/ES2022 module program.
+It enables `allowJs`, disables `checkJs`/emission, preserves JSX, forces module
+scope and injects no ambient `@types`. `semantic.configurationBasis` is
+`inferred-javascript` (or `project-config` for explicit configuration), and
+`message` records these defaults. No config file is written. Explicit JS config
+checking and syntactic diagnostics remain effective. TypeScript/Svelte source
+without configuration still reports fallback. Missing external bindings and
+browser-global/script conventions are not guessed.
+
+Resolution alone does not discover a test lifecycle. Dynamic impact still needs
+supported package test scripts and usable source coverage; bare embedded/tooling
+scripts without a test entry do not become successful dynamic analyses.
 
 The scan reads the project's installed declarations when available. Missing
 tools, dependencies and compiler diagnostics can yield fallback or partial

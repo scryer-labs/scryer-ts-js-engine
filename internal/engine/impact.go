@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/analysis"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/script"
@@ -28,7 +29,7 @@ func collectImpact(ctx context.Context, root string, resolve bool) (analysis.Imp
 	if resolve {
 		resolution, ok := graph.Semantic.(semantic.Report)
 		if !ok || resolution.Status != "resolved" {
-			return result, fmt.Errorf("dynamic TS/JS scan did not resolve: %+v", graph.Semantic)
+			return result, fmt.Errorf("dynamic TS/JS scan did not resolve (%s; %d diagnostics): %s %s", resolution.Status, resolution.Diagnostics, resolution.Message, strings.Join(resolution.DiagnosticMessages, "\n"))
 		}
 		result.Resolution, _ = json.Marshal(resolution)
 	}

@@ -15,8 +15,10 @@ function resolve() {
   const configs = new Set();
   for (const file of files) {
     for (let dir = path.dirname(path.join(root, file)); local(dir) || dir === root; dir = path.dirname(dir)) {
-      const config = path.join(dir, "tsconfig.json");
-      if (fs.existsSync(config)) configs.add(config);
+      for (const name of ["tsconfig.json", "jsconfig.json"]) {
+        const config = path.join(dir, name);
+        if (fs.existsSync(config)) { configs.add(config); break; }
+      }
       if (dir === root) break;
     }
   }
@@ -35,10 +37,12 @@ function resolve() {
     report.message = "TypeScript Compiler API is unavailable in the Scryer toolchain";
     return;
   }
-  if (!configs.size) {
-    report.message = "no tsconfig.json found for checkout source";
+  const inferJavaScript = !configs.size && files.length > 0 && files.every(file => /\.(?:[cm]?js|jsx)$/i.test(file));
+  if (!configs.size && !inferJavaScript) {
+    report.message = "no tsconfig.json or jsconfig.json found; inferred configuration is limited to JavaScript-only source";
     return;
   }
+  report.configurationBasis = inferJavaScript ? "inferred-javascript" : "project-config";
 
   const svelteFiles = files.filter(file => file.endsWith(".svelte"));
   const virtual = new Map();
@@ -97,9 +101,12 @@ function resolve() {
     for (const reference of parsed.projectReferences ?? []) {
       readConfig(ts.resolveProjectReferencePath(reference));
     }
+    analyzeProgram(parsed, path.dirname(config));
+  }
+  function analyzeProgram(parsed, directory) {
     const rootNames = parsed.fileNames.filter(file => sourcePaths.has(local(file)) && !file.endsWith(".svelte"));
     for (const [file, input] of virtual) {
-      if (!path.relative(path.dirname(config), input.filename).startsWith("..")) rootNames.push(file);
+      if (!path.relative(directory, input.filename).startsWith("..")) rootNames.push(file);
     }
     if (!rootNames.length) return;
     if (virtual.size) {
@@ -111,13 +118,13 @@ function resolve() {
       }
     }
     const options = { ...parsed.options, noEmit: true };
-    if (virtual.size && !options.paths?.["$lib/*"] && fs.existsSync(path.join(path.dirname(config), "src/lib")) &&
-        fs.existsSync(path.join(path.dirname(config), "svelte.config.js"))) {
+    if (virtual.size && !options.paths?.["$lib/*"] && fs.existsSync(path.join(directory, "src/lib")) &&
+        fs.existsSync(path.join(directory, "svelte.config.js"))) {
       // Use the default layout only for a config with no explicit override in
       // its source or inherited TypeScript path aliases.
-      const svelteConfig = fs.readFileSync(path.join(path.dirname(config), "svelte.config.js"), "utf8");
+      const svelteConfig = fs.readFileSync(path.join(directory, "svelte.config.js"), "utf8");
       if (!/\b(?:alias|files)\s*:|\.\.\./.test(svelteConfig)) {
-        options.paths = { ...options.paths, "$lib/*": [path.join(path.dirname(config), "src/lib/*")] };
+        options.paths = { ...options.paths, "$lib/*": [path.join(directory, "src/lib/*")] };
       }
     }
     const host = ts.createCompilerHost(options);
@@ -136,7 +143,7 @@ function resolve() {
       const at = d.file && d.start != null ? position(d.file,d.start) : null;
       report.diagnosticMessages.push(`${at ? at.file+':'+at.line+':'+at.column+': ' : ''}${ts.flattenDiagnosticMessageText(d.messageText,'\n')}`);
     }
-    const cache = ts.createModuleResolutionCache(path.dirname(config), file => file, options);
+    const cache = ts.createModuleResolutionCache(directory, file => file, options);
     for (const file of program.getSourceFiles()) {
       if (file.isDeclarationFile || (!sourcePaths.has(local(file.fileName)) && !virtual.has(file.fileName))) continue;
       function observeTauri(node) {
@@ -185,7 +192,18 @@ function resolve() {
       visit(file);
     }
   }
-  for (const config of configs) readConfig(config);
+  if (inferJavaScript) {
+    // Model source without creating or writing project configuration. Without a
+    // declared environment, do not inject ambient @types or infer global scripts.
+    const options = {allowJs: true, checkJs: false, noEmit: true, skipLibCheck: true,
+      target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext, jsx: ts.JsxEmit.Preserve,
+      moduleDetection: ts.ModuleDetectionKind.Force, types: []};
+    report.message = "JavaScript-only source uses inferred NodeNext modules (ES2022, allowJs, checkJs=false, noEmit, no ambient types). Unbound or external calls remain boundaries.";
+    analyzeProgram({fileNames: files.map(file => path.join(root, file)), options}, root);
+  } else {
+    for (const config of configs) readConfig(config);
+  }
   report.status = report.programs ? ((report.diagnostics || svelteMessage) ? "partial" : "resolved") : "fallback";
   if (!report.programs) report.message = "no configured TypeScript source files found";
   report.compilerVersion = ts.version;

@@ -36,6 +36,7 @@ type Endpoint struct {
 }
 
 type Report struct {
+	ConfigurationBasis string     `json:"configurationBasis,omitempty"`
 	Basis              string     `json:"basis"`
 	Status             string     `json:"status"`
 	Message            string     `json:"message,omitempty"`
