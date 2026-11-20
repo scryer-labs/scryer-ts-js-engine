@@ -36,19 +36,21 @@ type Endpoint struct {
 }
 
 type Report struct {
-	ConfigurationBasis string     `json:"configurationBasis,omitempty"`
-	Basis              string     `json:"basis"`
-	Status             string     `json:"status"`
-	Message            string     `json:"message,omitempty"`
-	CompilerVersion    string     `json:"compilerVersion,omitempty"`
-	Programs           int        `json:"programs"`
-	DiagnosticMessages []string   `json:"diagnosticMessages,omitempty"`
-	Diagnostics        int        `json:"diagnostics"`
-	SvelteFiles        int        `json:"svelteFiles,omitempty"`
-	SvelteMessage      string     `json:"svelteMessage,omitempty"`
-	Calls              []Edge     `json:"calls,omitempty"`
-	Imports            []Edge     `json:"imports,omitempty"`
-	Endpoints          []Endpoint `json:"endpoints,omitempty"`
+	UsableForImpact     bool       `json:"usableForImpact,omitempty"`
+	BlockingDiagnostics int        `json:"blockingDiagnostics,omitempty"`
+	ConfigurationBasis  string     `json:"configurationBasis,omitempty"`
+	Basis               string     `json:"basis"`
+	Status              string     `json:"status"`
+	Message             string     `json:"message,omitempty"`
+	CompilerVersion     string     `json:"compilerVersion,omitempty"`
+	Programs            int        `json:"programs"`
+	DiagnosticMessages  []string   `json:"diagnosticMessages,omitempty"`
+	Diagnostics         int        `json:"diagnostics"`
+	SvelteFiles         int        `json:"svelteFiles,omitempty"`
+	SvelteMessage       string     `json:"svelteMessage,omitempty"`
+	Calls               []Edge     `json:"calls,omitempty"`
+	Imports             []Edge     `json:"imports,omitempty"`
+	Endpoints           []Endpoint `json:"endpoints,omitempty"`
 }
 
 func Resolve(ctx context.Context, root string, files []string) Report {

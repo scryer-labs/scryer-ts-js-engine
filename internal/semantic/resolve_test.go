@@ -55,7 +55,7 @@ func TestInferredJavaScriptResolvesCommonJSAndESModulesWithoutConfig(t *testing.
 
 func TestJavaScriptInferenceDoesNotHideSyntaxErrorsOrAcceptUnconfiguredTypeScript(t *testing.T) {
 	malformed := resolveFixture(t, map[string]string{"broken.js": `function broken( {`})
-	if malformed.Status != "partial" || malformed.Diagnostics == 0 {
+	if malformed.Status != "partial" || malformed.Diagnostics == 0 || malformed.UsableForImpact {
 		t.Fatalf("%+v", malformed)
 	}
 	typed := resolveFixture(t, map[string]string{"main.ts": `export function value(): number { return 1; }`})
@@ -66,10 +66,10 @@ func TestJavaScriptInferenceDoesNotHideSyntaxErrorsOrAcceptUnconfiguredTypeScrip
 
 func TestExplicitJSConfigRetainsTypeCheckingAndDynamicCallsStayUnbound(t *testing.T) {
 	explicit := resolveFixture(t, map[string]string{
-		"jsconfig.json": `{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"types":[]},"include":["*.js"]}`,
+		"jsconfig.json": `{"compilerOptions":{"allowJs":true,"checkJs":true,"noEmit":true,"target":"ES2022","module":"NodeNext","moduleResolution":"NodeNext","types":[]},"include":["*.js"]}`,
 		"main.js":       "/** @param {number} n */\nfunction value(n){return n;} value('wrong');",
 	})
-	if explicit.ConfigurationBasis != "project-config" || explicit.Status != "partial" || explicit.Diagnostics == 0 {
+	if explicit.ConfigurationBasis != "project-config" || explicit.Status != "partial" || explicit.Diagnostics == 0 || !explicit.UsableForImpact || len(explicit.Calls) != 0 {
 		t.Fatalf("%+v", explicit)
 	}
 	unknown := resolveFixture(t, map[string]string{"main.js": `export function caller(value){return value();}`})

@@ -113,8 +113,8 @@ scryer project analyze --json --compact
 ```
 
 Impact defaults to static scan evidence; `--resolve` also runs native tests and
-collects after-snapshot coverage. Failed dynamic resolution/tests/coverage stop
-analysis without static fallback. Core owns snapshot comparison, traversal and
+collects after-snapshot coverage. Incomplete dynamic resolution/tests/coverage is reported per Engine/stage by
+Core, preserving other collected facts without static fallback. Core owns snapshot comparison, traversal and
 report rendering; the engine supplies shared scan projections and normalized
 JSON coverage. Multi-engine projects use the same command; CMake target selectors
 belong to C++ and are not interpreted here.
@@ -124,7 +124,7 @@ Vitest with matching `@vitest/coverage-v8`, Jest remapped Istanbul statements,
 and untransformed native `node --test` V8 offsets. Import accepts Istanbul or
 V8 JSON with these mapping limits. No unknown runner or missing mapping is
 silently accepted. Dynamic impact reuses the TypeScript/Svelte scan resolver
-and requires successful diagnostics. Snapshot dependency reuse requires identical
+and preserves semantic diagnostics as partial evidence. Snapshot dependency reuse requires identical
 manifests/lockfiles; otherwise npm lockfiles use offline `npm ci --ignore-scripts`.
 Imported test registrations can mark callbacks; globals/names alone cannot.
 
@@ -153,3 +153,14 @@ Core's `docs/contracts/COVERAGE.md` and `docs/contracts/IMPACT.md`.
 
 The [GitHub workflow](.github/workflows/ci.yml) builds the platform packages
 and exercises scan, static impact and coverage import through the ABI before publishing a version tag.
+
+## Partial semantic impact
+
+A compiler program with semantic type diagnostics can supply partial impact
+facts when configuration/options/global/syntax and adapter checks are usable.
+`semantic.usableForImpact` and `blockingDiagnostics` distinguish these cases.
+Calls overlapping diagnostics have no semantic target; remaining source
+observations and diagnostics are retained. Core marks analysis partial, exposes
+per-Engine/stage outcomes and exits nonzero even if after tests succeed.
+Blocking failures do not cause a static retry. Missing coverage does not discard
+already-collected graphs, and failed-run coverage is never source-matched as hits.

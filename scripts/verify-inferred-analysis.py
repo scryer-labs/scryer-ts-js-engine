@@ -48,9 +48,11 @@ with tempfile.TemporaryDirectory(prefix='scryer-inferred-js-') as folder:
     (output / 'inferred-impact.json').write_text(process.stdout)
     # Resolving syntax is not evidence of an executable test lifecycle.
     (root / 'package.json').unlink()
+    source.write_text(source.read_text().replace('return 2', 'return 3'))
     git('add', '-u'); git('commit', '-qm', 'no test configuration')
     failed = run(cli, 'project', 'analyze', root, '--resolve', '--json', '-o', output / 'must-not-exist.html', success=False)
-    assert not failed.stdout and not (output / 'must-not-exist.html').exists()
-    assert 'No original-source coverage mapped' in failed.stderr, failed.stderr
-    (output / 'missing-tests.txt').write_text(failed.stderr)
+    partial = json.loads(failed.stdout)
+    assert partial['status']=='partial' and partial['after']['nodes'] and (output / 'must-not-exist.html').exists()
+    assert any('No original-source coverage mapped' in stage.get('message','') for outcome in partial['engineOutcomes'] for stage in outcome['stages']), partial['engineOutcomes']
+    (output / 'missing-tests.txt').write_text(json.dumps(partial['engineOutcomes'],indent=2)+'\n'+failed.stderr)
 print('Real JavaScript sources, inferred impact/coverage and missing-test rejection passed.')

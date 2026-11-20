@@ -5,7 +5,7 @@ const os = require("node:os");
 
 const root = path.resolve(process.argv[1]);
 const files = JSON.parse(fs.readFileSync(0, "utf8"));
-const report = { basis: "typescript-compiler", status: "fallback", programs: 0, diagnostics: 0, diagnosticMessages: [], calls: [], imports: [], endpoints: [] };
+const report = { basis: "typescript-compiler", status: "fallback", programs: 0, diagnostics: 0, blockingDiagnostics: 0, usableForImpact: false, diagnosticMessages: [], calls: [], imports: [], endpoints: [] };
 const local = file => {
   const rel = path.relative(root, file);
   return rel && rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel) ? rel.split(path.sep).join("/") : "";
@@ -91,12 +91,13 @@ function resolve() {
     seen.add(config);
     const read = ts.readConfigFile(config, ts.sys.readFile);
     if (read.error) {
-      report.diagnostics++;
+      report.diagnostics++; report.blockingDiagnostics++;
       report.diagnosticMessages.push(ts.flattenDiagnosticMessageText(read.error.messageText,"\n"));
       return;
     }
     const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, path.dirname(config), undefined, config);
     report.diagnostics += parsed.errors.length;
+    report.blockingDiagnostics += parsed.errors.length;
     for (const d of parsed.errors) report.diagnosticMessages.push(ts.flattenDiagnosticMessageText(d.messageText,"\n"));
     for (const reference of parsed.projectReferences ?? []) {
       readConfig(ts.resolveProjectReferencePath(reference));
@@ -137,7 +138,11 @@ function resolve() {
     const program = ts.createProgram({ rootNames, options, projectReferences: parsed.projectReferences, host });
     const checker = program.getTypeChecker();
     report.programs++;
-    const diagnostics = [...program.getSyntacticDiagnostics(), ...program.getSemanticDiagnostics()];
+    const blocking = [...program.getSyntacticDiagnostics(), ...program.getOptionsDiagnostics(), ...program.getGlobalDiagnostics()];
+    report.blockingDiagnostics += blocking.length;
+    const semanticDiagnostics = program.getSemanticDiagnostics();
+    const diagnostics = [...blocking, ...semanticDiagnostics];
+    const affectedCall = node => diagnostics.some(d => d.file?.fileName === node.getSourceFile().fileName && d.start != null && d.start < node.end && d.start + Math.max(d.length || 0, 1) > node.getStart());
     report.diagnostics += diagnostics.length;
     for (const d of diagnostics.slice(0, 20)) {
       const at = d.file && d.start != null ? position(d.file,d.start) : null;
@@ -181,7 +186,7 @@ function resolve() {
           const decl = checker.getResolvedSignature(node)?.declaration;
           // Require a concrete source body. Type-only contracts and overloads
           // without an implementation cannot prove a destination.
-          if (decl?.body) {
+          if (decl?.body && !affectedCall(node)) {
             const target = position(decl.getSourceFile(), decl.getStart());
             const site = position(file, node.getStart(file));
             if (site && target && sourcePaths.has(target.file)) report.calls.push({ site, target, targetName: decl.name ? position(decl.getSourceFile(), decl.name.getStart()) : null, end: position(file, node.expression.end - 1), callee: node.expression.getText(file) });
@@ -204,6 +209,7 @@ function resolve() {
   } else {
     for (const config of configs) readConfig(config);
   }
+  report.usableForImpact = report.programs > 0 && !report.blockingDiagnostics && !svelteMessage;
   report.status = report.programs ? ((report.diagnostics || svelteMessage) ? "partial" : "resolved") : "fallback";
   if (!report.programs) report.message = "no configured TypeScript source files found";
   report.compilerVersion = ts.version;

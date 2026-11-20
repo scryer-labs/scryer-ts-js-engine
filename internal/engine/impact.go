@@ -28,10 +28,13 @@ func collectImpact(ctx context.Context, root string, resolve bool) (analysis.Imp
 	graph := facts["call-graph"].(*script.Graph)
 	if resolve {
 		resolution, ok := graph.Semantic.(semantic.Report)
-		if !ok || resolution.Status != "resolved" {
+		if !ok || (resolution.Status != "resolved" && !(resolution.Status == "partial" && resolution.UsableForImpact)) {
 			return result, fmt.Errorf("dynamic TS/JS scan did not resolve (%s; %d diagnostics): %s %s", resolution.Status, resolution.Diagnostics, resolution.Message, strings.Join(resolution.DiagnosticMessages, "\n"))
 		}
 		result.Resolution, _ = json.Marshal(resolution)
+		if resolution.Status == "partial" {
+			result.Notes = append(result.Notes, "Compiler diagnostics make this graph partial. Calls overlapping diagnostics have no semantic target; other compiler observations remain available without static fallback.")
+		}
 	}
 	registered := map[string]*script.TestEvidence{}
 	for _, call := range graph.Calls {
