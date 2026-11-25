@@ -164,3 +164,8 @@ observations and diagnostics are retained. Core marks analysis partial, exposes
 per-Engine/stage outcomes and exits nonzero even if after tests succeed.
 Blocking failures do not cause a static retry. Missing coverage does not discard
 already-collected graphs, and failed-run coverage is never source-matched as hits.
+
+## Contributor workflow
+
+Start with [AGENTS.md](AGENTS.md) and [working conventions](docs/WORKING-NOTES.md)
+for repository-specific analysis, coding, independent review and Orrery acceptance.
