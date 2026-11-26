@@ -31,7 +31,18 @@ jobs:
         if: matrix.os == 'windows'
         run: |
           echo 'C:\msys64\mingw64\bin' >> "$GITHUB_PATH"
+      - name: Prepare pinned semantic test tools
+        env:
+          SCRYER_TS_TOOLCHAIN: ${{ runner.temp }}/scryer-ts-toolchain
+        run: |
+          set -eu
+          node --version
+          npm install --prefix "$SCRYER_TS_TOOLCHAIN" --ignore-scripts --save-exact \
+            typescript@6.0.3 svelte@5.57.3 svelte2tsx@0.7.62 @jridgewell/trace-mapping@0.3.31
       - name: Build and test package
+        env:
+          SCRYER_TS_TOOLCHAIN: ${{ runner.temp }}/scryer-ts-toolchain
+          SCRYER_REQUIRE_SEMANTIC_TESTS: '1'
         run: |
           set -eu
           export CGO_ENABLED=1

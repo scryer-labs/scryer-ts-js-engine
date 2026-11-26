@@ -17,6 +17,7 @@ func collectImpact(ctx context.Context, root string, resolve bool) (analysis.Imp
 	result := analysis.ImpactSnapshot{Symbols: []analysis.ImpactSymbol{}, Calls: []analysis.ImpactCall{}, Contexts: []analysis.ImpactContext{}, Notes: []string{
 		"TS/JS impact reuses scan's script/Svelte collection and optional TypeScript/Svelte compiler enrichment. Dynamic dispatch, generated wrappers and unmapped template expressions remain boundaries.",
 		"Function token fingerprints exclude comments. Full-file source-context fingerprints retain templates/styles and can report formatting outside function definitions as unresolved context.",
+		"Anonymous callback identities use lexical owner and registration/attribute structure, not line offsets or execution order. Repeated indistinguishable identities remain ambiguous. Passing or containing a callback does not prove invocation.",
 	}}
 	if !filepath.IsAbs(root) {
 		return result, fmt.Errorf("impact requires absolute snapshot roots")
@@ -50,16 +51,15 @@ func collectImpact(ctx context.Context, root string, resolve bool) (analysis.Imp
 		var testContext json.RawMessage
 		if symbol.ImpactRegistration != "" {
 			evidence := registered[symbol.ImpactRegistration]
-			if evidence == nil {
-				continue
+			if evidence != nil {
+				role = "TEST"
+				testContext, _ = json.Marshal(map[string]any{"scope": "test-only", "evidence": []any{evidence}})
 			}
-			role = "TEST"
-			testContext, _ = json.Marshal(map[string]any{"scope": "test-only", "evidence": []any{evidence}})
 		}
 		raw, _ := json.Marshal(symbol.Definition)
 		var location analysis.ImpactRange
 		_ = json.Unmarshal(raw, &location)
-		result.Symbols = append(result.Symbols, analysis.ImpactSymbol{ID: symbol.ID, Key: symbol.ImpactKey, Signature: symbol.ImpactSignature, Fingerprint: symbol.ImpactFingerprint, Source: symbol.ImpactSource, Location: location, Role: role, TestContext: testContext})
+		result.Symbols = append(result.Symbols, analysis.ImpactSymbol{ID: symbol.ID, Key: symbol.ImpactKey, Signature: symbol.ImpactSignature, Fingerprint: symbol.ImpactFingerprint, Source: symbol.ImpactSource, Location: location, Role: role, TestContext: testContext, ExecutionKind: symbol.ExecutionKind})
 	}
 	names := make([]string, 0, len(graph.Contexts))
 	for file := range graph.Contexts {
@@ -85,5 +85,16 @@ func collectImpact(ctx context.Context, root string, resolve bool) (analysis.Imp
 		}
 		result.Calls = append(result.Calls, edge)
 	}
+	for _, reference := range graph.References {
+		raw, _ := json.Marshal(reference.Site)
+		var site analysis.ImpactRange
+		_ = json.Unmarshal(raw, &site)
+		result.Calls = append(result.Calls, analysis.ImpactCall{
+			ID: reference.ID, Caller: reference.From, Candidate: reference.To,
+			Callee: reference.Name, Resolution: reference.Resolution,
+			Kind: "framework-reference", CandidateBasis: reference.Basis, Site: site,
+		})
+	}
+
 	return result, nil
 }

@@ -65,6 +65,21 @@ with tempfile.TemporaryDirectory() as directory:
     report = execute({"operation":"impact", "impact":{"before":"a"*40, "after":"b"*40, "beforeRoot":str(before), "afterRoot":str(after), "resolve":False}})
     left, right = report["before"]["symbols"][0], report["after"]["symbols"][0]
     assert left["key"] == right["key"] and left["fingerprint"] != right["fingerprint"], report
+
+    # Anonymous body projection must survive the native DLL/dylib ABI, source
+    # offsets, CRLF and a non-ASCII path, not merely an in-process unit test.
+    for checkout, value in [(before, 1), (after, 2)]:
+        folder = checkout / "callback space 世界"
+        folder.mkdir()
+        (folder / "callback.js").write_bytes(
+            f"export function outer() {{ [1].map(() => {value}); }}\r\n".encode("utf-8"))
+    callbacks = execute({"operation":"impact", "impact":{"before":"a"*40, "after":"b"*40, "beforeRoot":str(before), "afterRoot":str(after), "resolve":False}})
+    left_callbacks = [s for s in callbacks["before"]["symbols"] if "callback " in s["signature"]]
+    right_callbacks = [s for s in callbacks["after"]["symbols"] if "callback " in s["signature"]]
+    assert len(left_callbacks) == len(right_callbacks) == 1, callbacks
+    assert left_callbacks[0]["key"] == right_callbacks[0]["key"], callbacks
+    assert left_callbacks[0]["fingerprint"] != right_callbacks[0]["fingerprint"], callbacks
+    assert left_callbacks[0]["role"] != "TEST", callbacks
     source = root / "value.js"
     source.write_text('export function value() { return 1; }\n')
     artifact = root / "coverage.json"

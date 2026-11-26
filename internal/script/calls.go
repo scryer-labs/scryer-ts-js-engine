@@ -23,6 +23,7 @@ type Range struct {
 }
 
 type Symbol struct {
+	ExecutionKind      string `json:"executionKind,omitempty"`
 	NameLocation       *Range `json:"nameLocation,omitempty"`
 	ImpactKey          string `json:"-"`
 	ImpactSignature    string `json:"-"`
@@ -74,6 +75,17 @@ func testEvidence(candidate *binding) *TestEvidence {
 	return nil
 }
 
+// Reference records a source dependency, never a proven function invocation.
+type Reference struct {
+	ID         string `json:"referenceId"`
+	From       string `json:"sourceSymbolId"`
+	To         string `json:"targetSymbolId,omitempty"`
+	Name       string `json:"name"`
+	Basis      string `json:"basis"`
+	Resolution string `json:"resolution"`
+	Site       Range  `json:"site"`
+}
+
 type Graph struct {
 	ranges      map[string][]Range
 	Contexts    map[string]string `json:"-"`
@@ -83,6 +95,8 @@ type Graph struct {
 	Symbols     []Symbol          `json:"symbols"`
 	Limitations []string          `json:"limitations"`
 	Calls       []Call            `json:"calls"`
+	References  []Reference       `json:"references"`
+	locals      map[string]map[string][]*binding
 	exports     map[string]map[string][]*binding
 	stars       map[string][]string
 }
@@ -92,7 +106,7 @@ type binding struct {
 }
 
 func NewGraph(root string) *Graph {
-	return &Graph{ProjectID: root, Basis: "tree-sitter-syntax", Symbols: []Symbol{}, Calls: []Call{}, exports: map[string]map[string][]*binding{}, stars: map[string][]string{}, Limitations: []string{"dynamic-dispatch", "external-package-symbols", "mutable-bindings", "svelte-template-expressions"}}
+	return &Graph{ProjectID: root, Basis: "tree-sitter-syntax", Symbols: []Symbol{}, Calls: []Call{}, References: []Reference{}, locals: map[string]map[string][]*binding{}, exports: map[string]map[string][]*binding{}, stars: map[string][]string{}, Limitations: []string{"dynamic-dispatch", "external-package-symbols", "mutable-bindings", "svelte-template-expressions"}}
 }
 
 func span(part source.Fragment, node *sitter.Node) Range {
@@ -129,6 +143,14 @@ func (g *Graph) Observe(ctx context.Context, part source.Fragment, root *sitter.
 		case "program", "statement_block", "switch_body":
 			scope := localBindings(part, node, writes)
 			scopes = append(scopes, scope)
+			if node.Kind() == "program" {
+				if g.locals[part.File] == nil {
+					g.locals[part.File] = map[string][]*binding{}
+				}
+				for name, candidates := range scope {
+					g.locals[part.File][name] = append(g.locals[part.File][name], candidates...)
+				}
+			}
 			if node.Kind() == "program" && !strings.HasSuffix(part.File, ".svelte") {
 				// Svelte fragments share a file path but each has its own bindings.
 				exports := g.exports[part.File]
@@ -207,7 +229,9 @@ func (g *Graph) Observe(ctx context.Context, part source.Fragment, root *sitter.
 			if g.ranges == nil {
 				g.ranges = map[string][]Range{}
 			}
-			g.ranges[part.File] = append(g.ranges[part.File], symbol.Definition)
+			if symbol.ImpactKey != "" {
+				g.ranges[part.File] = append(g.ranges[part.File], symbol.Definition)
+			}
 			scope := map[string][]*binding{}
 			for _, field := range []string{"parameter", "parameters"} {
 				bindPattern(part, node.ChildByFieldName(field), scope)
@@ -298,4 +322,27 @@ func (g *Graph) exportedSymbol(file, name string, resolve func(string, string) s
 		return g.exportedSymbol(resolve(file, stars[0]), name, resolve, seen)
 	}
 	return ""
+}
+
+// AddReference keeps stable source locations and a relationship kind separate
+// from calls, even when the target happens to be a function symbol.
+func (g *Graph) AddReference(from, to, name, basis, resolution string, site Range) {
+	g.References = append(g.References, Reference{
+		ID:   fmt.Sprintf("%s:%d:%d:%s:%s", site.File, site.Start.Line, site.Start.Column, basis, to),
+		From: from, To: to, Name: name, Basis: basis, Resolution: resolution, Site: site,
+	})
+}
+
+// ReferencedFunction uses the same stable module bindings as call resolution.
+// Ambiguous, reassigned and non-callable bindings never become source targets.
+func (g *Graph) ReferencedFunction(file, name string, resolve func(string, string) string) string {
+	candidates := g.locals[file][name]
+	if len(candidates) != 1 || candidates[0] == nil {
+		return ""
+	}
+	candidate := candidates[0]
+	if candidate.module != "" {
+		return g.ExportedFunction(resolve(file, candidate.module), candidate.exported, resolve)
+	}
+	return candidate.symbol
 }

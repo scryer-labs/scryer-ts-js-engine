@@ -134,6 +134,40 @@ Coverage is aggregate execution evidence, not assertion effectiveness or a
 causal test-to-caller path. The common JSON contract is maintained in Scryer
 Core's `docs/contracts/COVERAGE.md` and `docs/contracts/IMPACT.md`.
 
+## Callback and framework impact evidence
+
+Impact includes ordinary anonymous callbacks in hooks, array/promise calls,
+JSX attributes and nested functions. Correspondence uses the lexical owner,
+callee/argument or attribute structure and a literal registration label when
+present, never line offsets. Comments and CRLF do not change those keys.
+Repeated structurally indistinguishable callbacks retain duplicate keys so Core
+reports ambiguous correspondence; the engine does not guess by declaration order.
+A string label alone never classifies a callback as a test. Supported imported
+registration evidence is still required.
+
+`call-graph.references` is additive source evidence, separate from `calls`:
+`referenceId`, `sourceSymbolId`, optional `targetSymbolId`, `name`, `basis`,
+`resolution` and original-source `site`. React render references and inline JSX
+handler registrations use `react-render` / `react-handler`. Svelte component
+imports and simple event bindings use `svelte-component` / `svelte-handler`.
+References become impact edges with `kind: framework-reference` and the matching
+`candidateBasis`; they describe potential dependencies, not runtime invocation
+or compiler-confirmed call targets. Dynamic impact preserves this distinction.
+
+Svelte file components are explicit `kind: component` source entities with
+`executionKind: non-executable`. Their fingerprint covers source outside function
+bodies, including template/style context. They receive no method execution hit.
+Simple template event identifiers can reference stable script functions; template
+blocks, local `let:` scope, mutable/ambiguous bindings and unsupported expressions
+remain unresolved. React named handler values and richer template data flow are
+not inferred by the inline-handler adapter. Normal callable bodies retain their
+own fingerprints and call graph.
+
+Package manifests, recognized lockfiles, TypeScript/JavaScript configs and
+Svelte/Vite/Vitest config files also contribute context fingerprints. A changed
+configuration or non-callable context is unassessed impact, not evidence that
+unchanged function tokens have no behavioral impact.
+
 ## Known gaps
 
 - Dynamic dispatch, mutable bindings, external package targets and some
@@ -152,7 +186,11 @@ Core's `docs/contracts/COVERAGE.md` and `docs/contracts/IMPACT.md`.
 ## Release verification
 
 The [GitHub workflow](.github/workflows/ci.yml) builds the platform packages
-and exercises scan, static impact and coverage import through the ABI before publishing a version tag.
+and exercises scan, static impact (including anonymous callbacks, CRLF and spaced
+Unicode paths) and coverage import through the ABI before publishing a version
+tag. Both native platforms prepare the pinned TypeScript/Svelte test toolchain
+and require the partial-semantic callback regression to execute. This does not
+establish full Windows native test-runner/coverage lifecycle parity.
 
 ## Partial semantic impact
 

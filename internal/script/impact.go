@@ -24,38 +24,96 @@ func tokens(node *sitter.Node, data []byte) string {
 	}
 	return value.String()
 }
-func impactIdentity(part source.Fragment, node *sitter.Node, name string) (string, string, string, string, string) {
+
+// callableAnchor describes source structure, never the implementation body or
+// line offset. Repeated indistinguishable anchors deliberately share a key:
+// Core reports that correspondence as ambiguous rather than guessing by order.
+func callableAnchor(part source.Fragment, node *sitter.Node) string {
+	if name := node.ChildByFieldName("name"); name != nil {
+		return name.Utf8Text(part.Bytes)
+	}
+	parent := node.Parent()
+	if parent == nil {
+		return "anonymous function"
+	}
+	if parent.Kind() == "variable_declarator" {
+		if name := parent.ChildByFieldName("name"); name != nil {
+			return name.Utf8Text(part.Bytes)
+		}
+	}
+	if parent.Kind() == "arguments" {
+		if call := parent.Parent(); call != nil && call.Kind() == "call_expression" {
+			callee := call.ChildByFieldName("function")
+			if callee != nil {
+				argument := uint(0)
+				for i := uint(0); i < parent.NamedChildCount(); i++ {
+					child := parent.NamedChild(i)
+					if child.Kind() == "comment" {
+						continue
+					}
+					if child.Id() == node.Id() {
+						break
+					}
+					argument++
+				}
+				anchor := fmt.Sprintf("callback %s argument %d", tokens(callee, part.Bytes), argument)
+				// A literal registration label separates named tests, but does not
+				// classify them. Only resolved imported registration evidence does.
+				for i := uint(0); i < parent.NamedChildCount(); i++ {
+					label := parent.NamedChild(i)
+					if label.Kind() == "comment" {
+						continue
+					}
+					if label.Kind() == "string" {
+						anchor += " label " + label.Utf8Text(part.Bytes)
+					}
+					break
+				}
+				return anchor
+			}
+		}
+	}
+	for ancestor := parent; ancestor != nil && !isFunction(ancestor); ancestor = ancestor.Parent() {
+		switch ancestor.Kind() {
+		case "jsx_attribute":
+			if name := ancestor.NamedChild(0); name != nil {
+				return "callback JSX attribute " + name.Utf8Text(part.Bytes)
+			}
+		case "pair":
+			if key := ancestor.ChildByFieldName("key"); key != nil {
+				return "callback property " + tokens(key, part.Bytes)
+			}
+		}
+	}
+	return "anonymous function in " + parent.Kind()
+}
+
+func impactIdentity(part source.Fragment, node *sitter.Node, _ string) (string, string, string, string, string) {
 	if node.HasError() {
 		return "", "", "", "", ""
 	}
 	registration := ""
-	signature := name
-	if signature == "" && node.Parent() != nil && node.Parent().Kind() == "arguments" {
-		call := node.Parent().Parent()
-		if call != nil && call.Kind() == "call_expression" && node.Parent().NamedChildCount() > 0 {
-			label := node.Parent().NamedChild(0)
-			if label.Kind() == "string" {
-				signature = "test callback " + label.Utf8Text(part.Bytes)
-				registration = fmt.Sprintf("%s-%d:%d", symbolID(part, call), span(part, call).End.Line, span(part, call).End.Column)
-			}
+	if parent := node.Parent(); parent != nil && parent.Kind() == "arguments" {
+		if call := parent.Parent(); call != nil && call.Kind() == "call_expression" {
+			registration = fmt.Sprintf("%s-%d:%d", symbolID(part, call), span(part, call).End.Line, span(part, call).End.Column)
 		}
 	}
-	if signature == "" {
-		return "", "", "", "", ""
-	}
-	scope := []string{}
+	scope := []string{callableAnchor(part, node)}
 	for parent := node.Parent(); parent != nil; parent = parent.Parent() {
-		switch parent.Kind() {
-		case "class_declaration", "class", "function_declaration", "method_definition":
-			if n := parent.ChildByFieldName("name"); n != nil {
-				scope = append([]string{n.Utf8Text(part.Bytes)}, scope...)
+		if isFunction(parent) {
+			scope = append([]string{callableAnchor(part, parent)}, scope...)
+		} else if parent.Kind() == "class_declaration" || parent.Kind() == "class" {
+			if name := parent.ChildByFieldName("name"); name != nil {
+				scope = append([]string{name.Utf8Text(part.Bytes)}, scope...)
 			}
 		}
 	}
-	signature = strings.Join(append(scope, signature), "::")
+	signature := strings.Join(scope, "::")
 	key := part.File + "|" + signature
-	if parameters := node.ChildByFieldName("parameters"); parameters != nil {
-		key += "|" + tokens(parameters, part.Bytes)
+	for _, field := range []string{"parameter", "parameters"} {
+		if parameters := node.ChildByFieldName(field); parameters != nil {
+			key += "|" + tokens(parameters, part.Bytes)
+		}
 	}
 	return key, signature, analysis.Hash([]byte(tokens(node, part.Bytes))), node.Utf8Text(part.Bytes), registration
 }

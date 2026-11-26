@@ -10,6 +10,7 @@ import (
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
 
+	"github.com/scryer-labs/scryer-ts-js-engine/internal/script"
 	"github.com/scryer-labs/scryer-ts-js-engine/internal/source"
 )
 
@@ -42,6 +43,7 @@ type Collector struct {
 	exports    map[string]map[string]string
 	pending    []pendingLink
 	byFunction map[string]string
+	handlers   []script.Reference
 }
 
 type binding struct {
@@ -68,6 +70,9 @@ func (c *Collector) Observe(ctx context.Context, part source.Fragment, root *sit
 	locals := map[string]string{}
 	exports := map[string]string{}
 	c.locals[part.File], c.exports[part.File] = locals, exports
+	if err := c.observeInlineHandlers(ctx, part, root); err != nil {
+		return err
+	}
 	imports := directImports(part, root)
 	var exportAliases [][2]string
 	for i := uint(0); i < root.NamedChildCount(); i++ {
@@ -415,4 +420,60 @@ func bindsName(node *sitter.Node, name string, contents []byte) bool {
 		}
 	}
 	return false
+}
+
+// AddReferences projects React source dependencies without pretending React
+// invoked a component or event handler at runtime.
+func (c *Collector) AddReferences(graph *script.Graph, facts Facts) {
+	byComponent := map[string]string{}
+	for function, component := range c.byFunction {
+		byComponent[component] = function
+	}
+	for _, link := range facts.Links {
+		from, to := byComponent[link.From], byComponent[link.To]
+		if from == "" {
+			continue
+		}
+		site := script.Range{File: link.File, Start: script.Position{Line: link.Line, Column: link.Column}, End: script.Position{Line: link.Line, Column: link.Column + uint(len(link.Tag))}}
+		graph.AddReference(from, to, link.Tag, "react-render", link.Resolution, site)
+	}
+	for _, handler := range c.handlers {
+		graph.AddReference(handler.From, handler.To, handler.Name, handler.Basis, handler.Resolution, handler.Site)
+	}
+}
+
+func (c *Collector) observeInlineHandlers(ctx context.Context, part source.Fragment, root *sitter.Node) error {
+	var walk func(*sitter.Node, string) error
+	walk = func(node *sitter.Node, owner string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		switch node.Kind() {
+		case "function_declaration", "function_expression", "arrow_function", "method_definition":
+			loc := part.Location(node)
+			owner = fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Column)
+		case "jsx_attribute":
+			name := node.NamedChild(0)
+			value := node.NamedChild(1)
+			if name != nil && value != nil && !node.HasError() && strings.HasPrefix(name.Utf8Text(part.Bytes), "on") && value.Kind() == "jsx_expression" {
+				callback := value.NamedChild(0)
+				if callback != nil && (callback.Kind() == "arrow_function" || callback.Kind() == "function_expression") {
+					loc := part.Location(callback)
+					end := callback.EndPosition()
+					column := end.Column + 1
+					if end.Row == 0 {
+						column += part.Start.Column
+					}
+					c.handlers = append(c.handlers, script.Reference{From: owner, To: fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Column), Name: name.Utf8Text(part.Bytes), Basis: "react-handler", Resolution: "source-reference", Site: script.Range{File: loc.File, Start: script.Position{Line: loc.Line, Column: loc.Column}, End: script.Position{Line: part.Start.Row + end.Row + 1, Column: column}}})
+				}
+			}
+		}
+		for i := uint(0); i < node.NamedChildCount(); i++ {
+			if err := walk(node.NamedChild(i), owner); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(root, "")
 }

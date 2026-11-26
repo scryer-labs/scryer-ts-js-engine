@@ -93,9 +93,10 @@ func scanProject(ctx context.Context, root string, selected []string, resolveMod
 		facts["dependencies"] = map[string]any{"basis": "package-json-declarations", "manifests": manifests}
 	}
 	wantArchitecture := slices.Contains(selected, "architecture")
+	wantCalls := slices.Contains(selected, "call-graph")
 	var reactFacts *react.Collector
 	reactPackages := map[string]bool{}
-	if wantArchitecture {
+	if wantArchitecture || wantCalls {
 		type component struct {
 			ID   string `json:"componentId"`
 			Name string `json:"name"`
@@ -113,19 +114,20 @@ func scanProject(ctx context.Context, root string, selected []string, resolveMod
 			}
 			components = append(components, component{pkg.File, name, "package", pkg.File})
 		}
-		facts["architecture"] = map[string]any{"projectId": root, "basis": "package-json-declarations", "components": components,
-			"limitations": []string{"react-wrappers-and-classes", "react-data-flow", "svelte-dynamic-components"}}
+		if wantArchitecture {
+			facts["architecture"] = map[string]any{"projectId": root, "basis": "package-json-declarations", "components": components,
+				"limitations": []string{"react-wrappers-and-classes", "react-data-flow", "svelte-dynamic-components"}}
+		}
 		if len(reactPackages) > 0 {
 			reactFacts = react.New()
 		}
 	}
 	wantFiles, wantIPC := slices.Contains(selected, "files"), slices.Contains(selected, "ipc")
 	var graph *script.Graph
-	wantCalls := slices.Contains(selected, "call-graph")
 	if wantCalls || reactFacts != nil {
 		graph = script.NewGraph(root)
 	}
-	hasSvelte := wantArchitecture && slices.ContainsFunc(files, func(file fileFact) bool { return file.Language == "Svelte" })
+	hasSvelte := (wantArchitecture || wantCalls) && slices.ContainsFunc(files, func(file fileFact) bool { return file.Language == "Svelte" })
 	if !wantFiles && !wantIPC && reactFacts == nil && graph == nil && !hasSvelte {
 		return facts, nil
 	}
@@ -162,7 +164,7 @@ func scanProject(ctx context.Context, root string, selected []string, resolveMod
 		}
 		for _, fragment := range fragments {
 			hasErrors, err := script.Parse(ctx, fragment, func(ctx context.Context, part source.Fragment, root *sitter.Node) error {
-				if wantArchitecture && file.Language == "Svelte" {
+				if (wantArchitecture || wantCalls) && file.Language == "Svelte" {
 					for name, modules := range script.DefaultImports(part, root) {
 						svelteImports[name] = append(svelteImports[name], modules...)
 					}
@@ -198,8 +200,11 @@ func scanProject(ctx context.Context, root string, selected []string, resolveMod
 		}
 		if graph != nil && wantCalls {
 			graph.FileContext(file.Path, data)
+			if file.Language == "Svelte" {
+				svelte.AddComponent(graph, file.Path, data)
+			}
 		}
-		if wantArchitecture && file.Language == "Svelte" {
+		if (wantArchitecture || wantCalls) && file.Language == "Svelte" {
 			svelteFacts.Add(file.Path, owner, tags, svelteImports, func(specifier string) string {
 				edge := script.Import{Specifier: specifier}
 				edge.File = file.Path
@@ -208,7 +213,7 @@ func scanProject(ctx context.Context, root string, selected []string, resolveMod
 			})
 		}
 	}
-	if len(svelteFacts.Components) > 0 {
+	if wantArchitecture && len(svelteFacts.Components) > 0 {
 		facts["architecture"].(map[string]any)["svelte"] = svelteFacts
 	}
 	if wantFiles {
@@ -227,7 +232,7 @@ func scanProject(ctx context.Context, root string, selected []string, resolveMod
 		facts["call-graph"] = graph
 	}
 	if reactFacts != nil {
-		facts["architecture"].(map[string]any)["react"] = reactFacts.Facts(resolve, func(file, name string) string {
+		renderFacts := reactFacts.Facts(resolve, func(file, name string) string {
 			return graph.ExportedFunction(file, name, resolve)
 		}, func(file, specifier string) bool {
 			pkg := packageManifests[owningPackage(file, packages)]
@@ -238,7 +243,38 @@ func scanProject(ctx context.Context, root string, selected []string, resolveMod
 			}
 			return name != pkg.Name && pkg.declares(name)
 		})
+		if wantArchitecture {
+			facts["architecture"].(map[string]any)["react"] = renderFacts
+		}
+		if wantCalls {
+			reactFacts.AddReferences(graph, renderFacts)
+		}
 	}
+	if wantCalls {
+		for _, file := range files {
+			if file.Language != "Svelte" {
+				continue
+			}
+			data, err := fs.ReadFile(fsys, file.Path)
+			if err != nil {
+				return nil, err
+			}
+			if err := svelte.AddReferences(ctx, graph, file.Path, data, svelteFacts, resolve); err != nil {
+				return nil, err
+			}
+		}
+		for file := range paths {
+			if !impactConfiguration(file) {
+				continue
+			}
+			data, err := fs.ReadFile(fsys, file)
+			if err != nil {
+				return nil, err
+			}
+			graph.FileContext(file, data)
+		}
+	}
+
 	var resolution *semantic.Report
 	if resolveMode && (wantFiles || wantCalls || wantIPC) {
 		result := enrichSemantic(ctx, root, files, facts, framework)
@@ -298,4 +334,15 @@ func resolveImport(edge *script.Import, paths map[string]bool, configs map[strin
 func (m manifest) declares(name string) bool {
 	return m.Dependencies[name] != "" || m.DevDependencies[name] != "" ||
 		m.PeerDependencies[name] != "" || m.OptionalDependencies[name] != ""
+}
+
+// Configuration changes remain unassessed context, not fabricated callable edits.
+func impactConfiguration(file string) bool {
+	name := path.Base(file)
+	switch name {
+	case "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb":
+		return true
+	}
+	return (strings.HasPrefix(name, "tsconfig") || strings.HasPrefix(name, "jsconfig")) && strings.HasSuffix(name, ".json") ||
+		strings.HasPrefix(name, "svelte.config.") || strings.HasPrefix(name, "vite.config.") || strings.HasPrefix(name, "vitest.config.")
 }

@@ -87,14 +87,15 @@ type ImpactSymbol struct {
 }
 
 type ImpactCall struct {
-	Kind       string      `json:"kind,omitempty"`
-	Target     string      `json:"targetSymbolId,omitempty"`
-	ID         string      `json:"callSiteId"`
-	Caller     string      `json:"callerSymbolId"`
-	Candidate  string      `json:"candidateSymbolId"`
-	Callee     string      `json:"callee"`
-	Resolution string      `json:"resolution"`
-	Site       ImpactRange `json:"site"`
+	CandidateBasis string      `json:"candidateBasis,omitempty"`
+	Kind           string      `json:"kind,omitempty"`
+	Target         string      `json:"targetSymbolId,omitempty"`
+	ID             string      `json:"callSiteId"`
+	Caller         string      `json:"callerSymbolId"`
+	Candidate      string      `json:"candidateSymbolId"`
+	Callee         string      `json:"callee"`
+	Resolution     string      `json:"resolution"`
+	Site           ImpactRange `json:"site"`
 }
 
 type ImpactContext struct {
